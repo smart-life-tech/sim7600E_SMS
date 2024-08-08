@@ -73,6 +73,20 @@ void setup()
 
 void loop()
 {
+    if (checkForSMS())
+    {
+        String sms = readSMS();
+        SerialMon.println("Received SMS:");
+        SerialMon.println(sms);
+
+        // Respond to the received SMS
+        String response = "Your request has been received!";
+        // sendSMS("1234567890", response); // Replace with the sender's phone number
+        if (sms.indexOf("request") != -1)
+        {
+            callFlag = true;
+        }
+    }
     currentTime = millis();
     checkVibeButt();
     SendDhtData();
@@ -99,7 +113,7 @@ void checkVibeButt()
 
         if (currentTime - lastAlertTime >= delayBetweenAlerts)
         {
-            callFlag = true;
+            // callFlag = true;
         }
 
         if (callFlag == true)
@@ -112,7 +126,7 @@ void checkVibeButt()
 
     if (!alert1 && !alert2 && !alert3 && !alert4)
     {
-        callFlag = true;
+        // callFlag = true; enable this if you want the on board sensor to send you sms also
     }
 
     if (vibeflag)
@@ -212,4 +226,23 @@ void sendSMS(String message, String recipient)
     SerialMon.println(recipient);
     modem.sendSMS(recipient.c_str(), message.c_str());
     SerialMon.println("SMS Sent!");
+}
+
+bool checkForSMS()
+{
+    modem.sendAT("+CMGL=\"REC UNREAD\""); // List all unread messages
+    return modem.waitResponse(10000L) == 1;
+}
+
+String readSMS()
+{
+    modem.sendAT("+CMGR=1"); // Read the first message
+    String response = modem.stream.readString();
+    modem.waitResponse();
+
+    // Delete the read message to avoid memory overflow
+    modem.sendAT("+CMGD=1,4");
+    modem.waitResponse();
+
+    return response;
 }
