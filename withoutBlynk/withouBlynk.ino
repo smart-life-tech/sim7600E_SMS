@@ -18,7 +18,7 @@ String contact2 = "";           // Optionally, add a second contact
 #define blue 15  // button1 / motion
 #define green 13 // temp
 
-#define vibrationPin 22 // motion
+#define vibrationPin 22 // motion input
 #define button1 21      // sw
 
 #define DHT11_PIN 0 // DHT sensor pin
