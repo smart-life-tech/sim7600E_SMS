@@ -64,15 +64,9 @@ void sendsms(const char *message)
         Serial.print("Sending SMS to ");
         Serial.println(recipients[i]);
 
-        modemSerial.print("AT+CMGS=\"");
-        modemSerial.print(recipients[i]);
-        modemSerial.println("\"");
-
-        delay(1000);
-        modemSerial.print(message);
-        modemSerial.write(26); // CTRL+Z
-
-        if (modemSerial.find("OK"))
+        bool res = modem.sendSMS(recipients[i], message);
+        
+        if (res)
         {
             Serial.println("SMS sent successfully!");
         }
