@@ -13,7 +13,7 @@
 #define MODEM_STATUS 34
 
 #define LED_PIN 12
-#define BUZZER_PIN 21 // ✅ Moved from pin 27 to avoid modem conflict
+#define BUZZER_PIN 21 //  Moved from pin 27 to avoid modem conflict
 #define BUTTON_PIN 13 // Button on GPIO 13
 
 #define MODEM_BAUD 115200
@@ -23,12 +23,12 @@ TinyGsm modem(modemSerial);
 float lat, lon = 0.0;
 bool fetch = false;
 
-// ✅ Two recipient numbers
+//  Two recipient numbers
 const char *recipients[] = {
     "+19568784196",
     "+19565292282"};
 
-// ⏱️ Wait for GPS fix
+// ⏱ Wait for GPS fix
 bool waitForGPS(int timeout_sec = 60)
 {
     Serial.println("Waiting for GPS fix...");
@@ -56,7 +56,7 @@ bool waitForGPS(int timeout_sec = 60)
     return false;
 }
 
-// 📲 Send SMS to all recipients
+//  Send SMS to all recipients
 void sendsms(const char *message)
 {
     for (int i = 0; i < 2; i++)
