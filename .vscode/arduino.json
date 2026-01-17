@@ -1,5 +1,5 @@
 {
     "configuration": "cpu=atmega2560",
     "board": "arduino:avr:mega",
-    "sketch": "sim7600\\sim7600.ino"
+    "sketch": "message\\message.ino"
 }
