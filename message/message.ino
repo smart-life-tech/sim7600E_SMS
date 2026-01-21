@@ -28,6 +28,37 @@ const char *recipients[] = {
     "+19568784196",
     "+19565292282"};
 
+// Ensure the modem is actually registered before sending SMS
+bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
+{
+    Serial.println("Ensuring network registration...");
+    unsigned long start = millis();
+    while ((millis() - start) < timeoutMs)
+    {
+        int16_t sq = modem.getSignalQuality();
+        Serial.print("Signal quality: ");
+        Serial.println(sq);
+
+        if (modem.isNetworkConnected())
+        {
+            Serial.println("Network registered.");
+            return true;
+        }
+
+        // waitForNetwork blocks up to the timeout we give it
+        if (modem.waitForNetwork(15000))
+        {
+            Serial.println("Network registered.");
+            return true;
+        }
+
+        Serial.println("Network not ready, retrying...");
+    }
+
+    Serial.println("Network registration timed out.");
+    return false;
+}
+
 // ⏱ Wait for GPS fix
 bool waitForGPS(int timeout_sec = 60)
 {
@@ -111,7 +142,12 @@ void setup()
         Serial.println("Modem restart failed.");
     }
 
-    modem.setNetworkMode(4); // LTE only
+    modem.setNetworkMode(2); // Auto-select (allows fallback for SMS)
+
+    if (!ensureNetworkConnected())
+    {
+        Serial.println("Warning: modem not registered; SMS will fail until registration succeeds.");
+    }
     modem.enableGPS();
     modem.sendAT("+CGPS=1,1");
     delay(1000);
@@ -147,6 +183,12 @@ void loop()
         else
         {
             strcpy(message, "MOM, I need help! Maleny. Unable to get GPS location.");
+        }
+
+        if (!ensureNetworkConnected())
+        {
+            Serial.println("Cannot send SMS: modem not registered.");
+            return;
         }
 
         sendsms(message);
