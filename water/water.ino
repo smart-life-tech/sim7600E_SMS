@@ -151,16 +151,30 @@ void setup() {
   delay(3000);
 
   pinMode(MODEM_PWRKEY, OUTPUT);
-  digitalWrite(MODEM_PWRKEY, HIGH);
-  delay(300);
   digitalWrite(MODEM_PWRKEY, LOW);
+  delay(1200);
+  digitalWrite(MODEM_PWRKEY, HIGH);
 
   pinMode(MODEM_FLIGHT, OUTPUT);
-  digitalWrite(MODEM_FLIGHT, HIGH);
+  digitalWrite(MODEM_FLIGHT, LOW); // LOW = RF enabled (flight mode off)
 
-  Serial.println("Initializing modem...");
+  Serial.println("Initializing modem.. now.");
   modem.restart();
-  modem.setNetworkMode(38);  // 38=LTE only, 51=GSM+LTE auto
+  modem.setNetworkMode(51);  // 51=GSM+LTE auto, safer for SIMs
+
+  // Basic SIM/network diagnostics (responses appear in Serial because TINY_GSM_DEBUG is enabled)
+  modem.sendAT("+CPIN?");
+  modem.waitResponse(2000);
+  modem.sendAT("+CSQ");
+  modem.waitResponse(2000);
+  modem.sendAT("+CREG?");
+  modem.waitResponse(2000);
+  modem.sendAT("+CGREG?");
+  modem.waitResponse(2000);
+  modem.sendAT("+CEREG?");
+  modem.waitResponse(2000);
+  modem.sendAT("+COPS?");
+  modem.waitResponse(2000);
 
   logModemStatus();
 
