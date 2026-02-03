@@ -1,11 +1,11 @@
 /*********************************************************** 
  * SafeWater Guardian with Push Button SMS Test
- * LilyGo A7670G + SIM7600
+ * LilyGo A7670G
  * Sensors: Turbidity, TDS, pH
  * SMS Alert + GPS Location
  ************************************************************/
 
-#define TINY_GSM_MODEM_SIM7600
+#define TINY_GSM_MODEM_SIM7080  // A7670G uses SIM7080 library
 #define TINY_GSM_DEBUG Serial
 #include <TinyGsmClient.h>
 
@@ -135,6 +135,7 @@ void logModemStatus() {
 /* ================== SETUP ================== */
 void setup() {
   Serial.begin(115200);
+  Serial.println("starting modem...");
   delay(1000);
 
   pinMode(LED_PIN, OUTPUT);
@@ -159,7 +160,7 @@ void setup() {
 
   Serial.println("Initializing modem...");
   modem.restart();
-  modem.setNetworkMode(2);
+  modem.setNetworkMode(38);  // 38=LTE only, 51=GSM+LTE auto
 
   logModemStatus();
 
