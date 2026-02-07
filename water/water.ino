@@ -73,19 +73,52 @@ String getWarningLevel(int turb, int tds, int ph) {
   return "SAFE";
 }
 
-bool ensureNetworkConnected(uint32_t timeoutMs = 60000) {
-  Serial.println("Checking network...");
-  if (!modem.waitForNetwork(timeoutMs)) {
-    Serial.println("⚠ Network registration failed");
-    return false;
-  }
-  if (!modem.isNetworkConnected()) {
-    Serial.println("⚠ Network not connected");
-    return false;
-  }
+bool ensureNetworkConnected(uint32_t timeoutMs = 90000) {
+  Serial.println("\n=== CHECKING NETWORK ===");
+  
+  // Check signal first
   int16_t rssi = modem.getSignalQuality();
   Serial.print("Signal quality (RSSI): ");
-  Serial.println(rssi);
+  Serial.print(rssi);
+  Serial.println(rssi == 99 ? " (no signal)" : rssi < 10 ? " (weak)" : " (ok)");
+  
+  if (rssi == 99 || rssi == 0) {
+    Serial.println(" No signal detected - check antenna/SIM");
+    return false;
+  }
+  
+  // Get registration status via AT command
+  Serial.print("GSM Registration: ");
+  modem.sendAT("+CREG?");
+  modem.waitResponse(2000);
+  
+  // Try network registration
+  Serial.println("Waiting for network registration...");
+  unsigned long start = millis();
+  bool connected = false;
+  
+  while (millis() - start < timeoutMs) {
+    if (modem.isNetworkConnected()) {
+      connected = true;
+      break;
+    }
+    Serial.print(".");
+    delay(2000);
+  }
+  Serial.println();
+  
+  if (!connected) {
+    Serial.println(" Network registration failed");
+    Serial.println("Current operator selection:");
+    modem.sendAT("+COPS?");
+    modem.waitResponse(5000);
+    return false;
+  }
+  
+  Serial.print("✓ Registered to: ");
+  Serial.println(modem.getOperator());
+  Serial.print("✓ Signal: ");
+  Serial.println(modem.getSignalQuality());
   return true;
 }
 
@@ -110,7 +143,7 @@ void sendSMS(const char *message) {
       Serial.println(")");
 
       sent = modem.sendSMS(recipients[i], message);
-      Serial.println(sent ? "✅ SMS sent" : "❌ SMS failed");
+      Serial.println(sent ? " SMS sent" : " SMS failed");
 
       if (!sent) {
         delay(5000);
@@ -121,15 +154,29 @@ void sendSMS(const char *message) {
 }
 
 void logModemStatus() {
+  Serial.println("\n=== MODEM STATUS ===");
+  
   Serial.print("Modem info: ");
-  Serial.println(modem.getModemInfo());
+  String info = modem.getModemInfo();
+  Serial.println(info.length() > 0 ? info : "No response");
 
+  Serial.print("SIM status: ");
   int simStatus = modem.getSimStatus();
-  Serial.print("SIM status code: ");
-  Serial.println(simStatus);
+  Serial.print(simStatus);
+  Serial.println(simStatus == 1 ? " (READY)" : simStatus == 2 ? " (PIN required)" : " (ERROR)");
+  
+  if (simStatus != 1) {
+    Serial.println(" SIM not ready!");
+  }
 
+  Serial.print("IMEI: ");
+  Serial.println(modem.getIMEI());
+  
   Serial.print("Operator: ");
-  Serial.println(modem.getOperator());
+  String op = modem.getOperator();
+  Serial.println(op.length() > 0 ? op : "Not registered");
+  
+  Serial.println("==================\n");
 }
 
 /* ================== SETUP ================== */
@@ -158,35 +205,86 @@ void setup() {
   pinMode(MODEM_FLIGHT, OUTPUT);
   digitalWrite(MODEM_FLIGHT, LOW); // LOW = RF enabled (flight mode off)
 
-  Serial.println("Initializing modem.. now.");
-  modem.restart();
-  modem.setNetworkMode(51);  // 51=GSM+LTE auto, safer for SIMs
-
-  // Basic SIM/network diagnostics (responses appear in Serial because TINY_GSM_DEBUG is enabled)
+  Serial.println("\n=== INITIALIZING MODEM ===");
+  Serial.println("Restarting modem...");
+  if (!modem.restart()) {
+    Serial.println(" Modem restart failed!");
+  } else {
+    Serial.println(" Modem restarted");
+  }
+  
+  delay(2000);
+  
+  Serial.println("\nSetting network mode to auto (GSM+LTE)...");
+  modem.setNetworkMode(51);  // 51=GSM+LTE auto
+  delay(1000);
+  
+  // T-Mobile APN configuration
+  Serial.println("Configuring T-Mobile APN...");
+  modem.sendAT("+CGDCONT=1,\"IP\",\"fast.t-mobile.com\"");
+  if (modem.waitResponse() == 1) {
+    Serial.println(" APN set to fast.t-mobile.com");
+  } else {
+    Serial.println(" APN setting failed");
+  }
+  
+  delay(1000);
+  
+  Serial.println("\n--- AT Command Diagnostics ---");
+  
+  Serial.print("SIM PIN check: ");
   modem.sendAT("+CPIN?");
   modem.waitResponse(2000);
+  
+  Serial.print("Signal quality: ");
   modem.sendAT("+CSQ");
   modem.waitResponse(2000);
+  
+  Serial.print("Network registration (GSM): ");
   modem.sendAT("+CREG?");
   modem.waitResponse(2000);
+  
+  Serial.print("Network registration (GPRS): ");
   modem.sendAT("+CGREG?");
   modem.waitResponse(2000);
+  
+  Serial.print("Network registration (LTE): ");
   modem.sendAT("+CEREG?");
   modem.waitResponse(2000);
+  
+  Serial.print("Operator selection: ");
   modem.sendAT("+COPS?");
-  modem.waitResponse(2000);
+  modem.waitResponse(5000);
+  
+  Serial.println("--- End Diagnostics ---\n");
 
   logModemStatus();
 
   if (!ensureNetworkConnected()) {
-    Serial.println("⚠ Network not connected");
+    Serial.println(" Network not connected - SMS will not work!");
+    Serial.println("Troubleshooting:");
+    Serial.println("1. Check SIM card is inserted correctly");
+    Serial.println("2. Verify SIM has active service with T-Mobile");
+    Serial.println("3. Check antenna is connected");
+    Serial.println("4. Try SIM in phone to confirm it works");
+  } else {
+    Serial.println(" Network connected successfully! ");
   }
 
+  Serial.println("\nEnabling GPS...");
   modem.enableGPS();
   modem.sendAT("+CGPS=1,1");
+  modem.waitResponse(2000);
+  
+  Serial.println("Setting SMS text mode...");
   modem.sendAT("+CMGF=1"); // SMS text mode
-
-  Serial.println("System ready.");
+  if (modem.waitResponse() == 1) {
+    Serial.println(" SMS mode configured");
+  }
+  
+  Serial.println("\n╔════════════════════════════════╗");
+  Serial.println("║   System Ready                 ║");
+  Serial.println("╚════════════════════════════════╝\n");
 }
 
 /* ================== LOOP ================== */
@@ -272,6 +370,6 @@ void loop() {
     digitalWrite(LED_PIN, LOW);
   }
 
-  delay(30000); // check every 30 seconds
+  delay(10000); // check every 30 seconds
 }
 
