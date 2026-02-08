@@ -219,11 +219,11 @@ void setup() {
   modem.setNetworkMode(51);  // 51=GSM+LTE auto
   delay(1000);
   
-  // T-Mobile APN configuration
-  Serial.println("Configuring T-Mobile APN...");
-  modem.sendAT("+CGDCONT=1,\"IP\",\"fast.t-mobile.com\"");
+  // Telcel APN configuration
+  Serial.println("Configuring Telcel APN...");
+  modem.sendAT("+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
   if (modem.waitResponse() == 1) {
-    Serial.println(" APN set to fast.t-mobile.com");
+    Serial.println(" APN set to internet.itelcel.com");
   } else {
     Serial.println(" APN setting failed");
   }
@@ -264,7 +264,7 @@ void setup() {
     Serial.println(" Network not connected - SMS will not work!");
     Serial.println("Troubleshooting:");
     Serial.println("1. Check SIM card is inserted correctly");
-    Serial.println("2. Verify SIM has active service with T-Mobile");
+    Serial.println("2. Verify SIM has active service with Telcel");
     Serial.println("3. Check antenna is connected");
     Serial.println("4. Try SIM in phone to confirm it works");
   } else {
