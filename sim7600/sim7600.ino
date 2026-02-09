@@ -1,213 +1,197 @@
 #define TINY_GSM_MODEM_SIM7600
-
-// Set serial for debug console (to the Serial Monitor, default speed 115200)
-#define SerialMon Serial
-
-// Set serial for AT commands (to the module)
-// Use Hardware Serial on Mega, Leonardo, Micro
-#define SerialAT Serial1
-
-// See all AT commands, if wanted
-#define DUMP_AT_COMMANDS
-
-// Define the serial console for debug prints, if needed
-#define TINY_GSM_DEBUG SerialMon
-
-#define SMS_TARGET "+86xxxxxxx" // Change the number you want to send sms message
-
-// Your GPRS credentials, if any
-const char apn[] = "YourAPN";
-// const char apn[] = "ibasis.iot";
-const char gprsUser[] = "";
-const char gprsPass[] = "";
-
-#include <SPI.h>
-#include <SD.h>
-#include <Ticker.h>
+#define TINY_GSM_DEBUG Serial
 #include <TinyGsmClient.h>
-#include "utilities.h"
 
-#ifdef DUMP_AT_COMMANDS
-#include <StreamDebugger.h>
-StreamDebugger debugger(SerialAT, SerialMon);
-TinyGsm modem(debugger);
-#else
-TinyGsm modem(SerialAT);
-#endif
+#define UART_BAUD 115200
 
-void light_sleep(uint32_t sec)
+#define MODEM_TX 27
+#define MODEM_RX 26
+#define MODEM_PWRKEY 4
+#define MODEM_DTR 32
+#define MODEM_RI 33
+#define MODEM_FLIGHT 25
+#define MODEM_STATUS 34
+
+#define LED_PIN 12
+#define BUZZER_PIN 21 //  Moved from pin 27 to avoid modem conflict
+#define BUTTON_PIN 13 // Button on GPIO 13
+
+#define MODEM_BAUD 115200
+#define modemSerial Serial1
+TinyGsm modem(modemSerial);
+
+float lat, lon = 0.0;
+bool fetch = false;
+
+//  Two recipient numbers
+const char *recipients[] = {
+    "+19568784196",
+    "+19565292282"};
+
+// Ensure the modem is actually registered before sending SMS
+bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
 {
-    esp_sleep_enable_timer_wakeup(sec * 1000000ULL);
-    esp_light_sleep_start();
+    Serial.println("Ensuring network registration...");
+    unsigned long start = millis();
+    while ((millis() - start) < timeoutMs)
+    {
+        int16_t sq = modem.getSignalQuality();
+        Serial.print("Signal quality: ");
+        Serial.println(sq);
+
+        if (modem.isNetworkConnected())
+        {
+            Serial.println("Network registered.");
+            return true;
+        }
+
+        // waitForNetwork blocks up to the timeout we give it
+        if (modem.waitForNetwork(15000))
+        {
+            Serial.println("Network registered.");
+            return true;
+        }
+
+        Serial.println("Network not ready, retrying...");
+    }
+
+    Serial.println("Network registration timed out.");
+    return false;
+}
+
+// ⏱ Wait for GPS fix
+bool waitForGPS(int timeout_sec = 60)
+{
+    Serial.println("Waiting for GPS fix...");
+    unsigned long start = millis();
+    while ((millis() - start) < (timeout_sec * 1000))
+    {
+        if (modem.getGPS(&lat, &lon))
+        {
+            Serial.print("GPS Fix acquired after ");
+            Serial.print((millis() - start) / 1000);
+            Serial.println(" seconds");
+            fetch = true;
+            return true;
+        }
+
+        if ((millis() - start) % 5000 < 100)
+        {
+            Serial.print("Waiting for GPS fix... ");
+            Serial.print((millis() - start) / 1000);
+            Serial.println(" seconds elapsed");
+        }
+        delay(100);
+    }
+    Serial.println("GPS fix timeout!");
+    return false;
+}
+
+//  Send SMS to all recipients
+void sendsms(const char *message)
+{
+    for (int i = 0; i < 2; i++)
+    {
+        Serial.print("Sending SMS to ");
+        Serial.println(recipients[i]);
+
+        bool res = modem.sendSMS(recipients[i], message);
+
+        if (res)
+        {
+            Serial.println("SMS sent successfully!");
+        }
+        else
+        {
+            Serial.println("SMS failed to send.");
+        }
+        delay(3000);
+    }
 }
 
 void setup()
 {
-    // Set console baud rate
-    SerialMon.begin(115200);
+    Serial.begin(115200);
+    delay(10);
 
-    // Set GSM module baud rate
-    SerialAT.begin(UART_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
-
-    /*
-      The indicator light of the board can be controlled
-    */
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH);
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    /*
-      MODEM_PWRKEY IO:4 The power-on signal of the modulator must be given to it,
-      otherwise the modulator will not reply when the command is sent
-    */
+    modemSerial.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
+    delay(3000);
+
     pinMode(MODEM_PWRKEY, OUTPUT);
     digitalWrite(MODEM_PWRKEY, HIGH);
-    delay(300); // Need delay
+    delay(300);
     digitalWrite(MODEM_PWRKEY, LOW);
 
-    /*
-      MODEM_FLIGHT IO:25 Modulator flight mode control,
-      need to enable modulator, this pin must be set to high
-    */
     pinMode(MODEM_FLIGHT, OUTPUT);
     digitalWrite(MODEM_FLIGHT, HIGH);
 
-    Serial.println("Start modem...");
+    Serial.println("Starting modem...");
     delay(3000);
-
     while (!modem.testAT())
     {
         delay(10);
     }
 
-    bool ret = modem.setNetworkMode(2);
-    DBG("setNetworkMode:", ret);
-
-    // Check network registration status and network signal status
-    int16_t sq;
-    Serial.print("Wait for the modem to register with the network.");
-    SIM7600RegStatus status = REG_NO_RESULT;
-    while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED)
+    Serial.println("Modem initialized.");
+    if (!modem.restart())
     {
-        status = modem.getRegistrationStatus();
-        switch (status)
-        {
-        case REG_UNREGISTERED:
-        case REG_SEARCHING:
-            sq = modem.getSignalQuality();
-            Serial.printf("[%lu] Signal Quality:%d\n", millis() / 1000, sq);
-            delay(1000);
-            break;
-        case REG_DENIED:
-            Serial.println("Network registration was rejected, please check if the APN is correct");
-            return;
-        case REG_OK_HOME:
-            Serial.println("Online registration successful");
-            break;
-        case REG_OK_ROAMING:
-            Serial.println("Network registration successful, currently in roaming mode");
-            break;
-        default:
-            Serial.printf("Registration Status:%d\n", status);
-            delay(1000);
-            break;
-        }
+        Serial.println("Modem restart failed.");
     }
-    Serial.println();
-    Serial.printf("Registration Status:%d\n", status);
+
+    modem.setNetworkMode(2); // Auto-select (allows fallback for SMS)
+
+    if (!ensureNetworkConnected())
+    {
+        Serial.println("Warning: modem not registered; SMS will fail until registration succeeds.");
+    }
+    modem.enableGPS();
+    modem.sendAT("+CGPS=1,1");
     delay(1000);
 
-    // https://github.com/vshymanskyy/TinyGSM/pull/405
-    uint8_t mode = modem.getGNSSMode();
-    DBG("GNSS Mode:", mode);
-
-    /**
-        CGNSSMODE: <gnss_mode>,<dpo_mode>
-        This command is used to configure GPS, GLONASS, BEIDOU and QZSS support mode.
-        gnss_mode:
-            0 : GLONASS
-            1 : BEIDOU
-            2 : GALILEO
-            3 : QZSS
-        dpo_mode :
-            0 disable
-            1 enable
-    */
-    modem.setGNSSMode(1, 1);
-    light_sleep(1);
-
-    DBG("Enabling GPS/GNSS/GLONASS");
-    modem.enableGPS();
-    light_sleep(2);
+    modem.sendAT("+CMGF=1"); // Text mode
+    Serial.println("SMS mode enabled");
 }
 
 void loop()
 {
-    float lat2 = 0;
-    float lon2 = 0;
-    float speed2 = 0;
-    float alt2 = 0;
-    int vsat2 = 0;
-    int usat2 = 0;
-    float accuracy2 = 0;
-    int year2 = 0;
-    int month2 = 0;
-    int day2 = 0;
-    int hour2 = 0;
-    int min2 = 0;
-    int sec2 = 0;
-    DBG("Requesting current GPS/GNSS/GLONASS location");
-    for (;;)
+    if (digitalRead(BUTTON_PIN) == LOW)
     {
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        if (modem.getGPS(&lat2, &lon2, &speed2, &alt2, &vsat2, &usat2, &accuracy2,
-                         &year2, &month2, &day2, &hour2, &min2, &sec2))
+        Serial.println("Button Pressed! Sending alert...");
+
+        // 🔊 Buzz to alert
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(1000);
+        digitalWrite(BUZZER_PIN, LOW);
+
+        char message[160];
+
+        if (waitForGPS(60))
         {
-            DBG("Latitude:", String(lat2, 8), "\tLongitude:", String(lon2, 8));
-            DBG("Speed:", speed2, "\tAltitude:", alt2);
-            DBG("Visible Satellites:", vsat2, "\tUsed Satellites:", usat2);
-            DBG("Accuracy:", accuracy2);
-            DBG("Year:", year2, "\tMonth:", month2, "\tDay:", day2);
-            DBG("Hour:", hour2, "\tMinute:", min2, "\tSecond:", sec2);
-            break;
+            Serial.print("Location: ");
+            Serial.print(lat, 6);
+            Serial.print(", ");
+            Serial.println(lon, 6);
+
+            snprintf(message, sizeof(message),
+                     "MOM, I need help its Maleny! This is my location: https://www.google.com/maps?q=%f,%f",
+                     lat, lon);
         }
         else
         {
-            light_sleep(2);
+            strcpy(message, "MOM, I need help! Maleny. Unable to get GPS location.");
         }
+
+        if (!ensureNetworkConnected())
+        {
+            Serial.println("Cannot send SMS: modem not registered.");
+            return;
+        }
+
+        sendsms(message);
+        delay(5000);
     }
-
-    String msg_str = "Longitude:" + String(lon2, 6) + " ";
-    msg_str += "Latitude:" + String(lat2, 6) + "\n";
-    msg_str += "UTC Date:" + String(year2) + "/";
-    msg_str += String(month2) + "/";
-    msg_str += String(day2) + " \n";
-    msg_str += "UTC Time:" + String(hour2) + ":";
-    msg_str += String(min2) + ":";
-    msg_str += String(sec2);
-    msg_str += "\n";
-
-    Serial.print("MESSAGE:");
-    Serial.println(msg_str);
-
-    bool res = modem.sendSMS(SMS_TARGET, msg_str);
-    Serial.print("Send sms message ");
-    Serial.println(res ? "OK" : "fail");
-
-    DBG("Retrieving GPS/GNSS/GLONASS location again as a string");
-    String gps_raw = modem.getGPSraw();
-    DBG("GPS/GNSS Based Location String:", gps_raw);
-    DBG("Disabling GPS");
-    modem.disableGPS();
-
-    SerialMon.printf("End of tests. Enable deep sleep , Will wake up in %d seconds", TIME_TO_SLEEP);
-
-    // Wait for modem to power off
-    light_sleep(5);
-
-    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-    delay(200);
-    esp_deep_sleep_start();
-
-    while (1)
-        ;
 }
