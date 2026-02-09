@@ -29,16 +29,45 @@ const char *recipients[] = {
     "+19563227945"  // Fixed: removed extra 1 at beginning
 };
 
+void printAt(const char *label, const char *cmd, uint32_t timeoutMs = 2000)
+{
+    Serial.print(label);
+    modem.sendAT(cmd);
+    modem.waitResponse(timeoutMs);
+}
+
 // Ensure the modem is actually registered before sending SMS
 bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
 {
     Serial.println("Ensuring network registration...");
+    printAt("SIM status: ", "+CPIN?");
+    printAt("RF state: ", "+CFUN?");
+    printAt("Reg (LTE): ", "+CEREG?");
+    printAt("Reg (GSM): ", "+CREG?");
+    printAt("Reg (GPRS): ", "+CGREG?");
+    printAt("Operator: ", "+COPS?");
+    printAt("Network mode: ", "+CNMP?");
+
+    int16_t sq = modem.getSignalQuality();
+    Serial.print("Signal quality: ");
+    Serial.println(sq);
+
+    if (sq == 99 || sq == 0)
+    {
+        Serial.println("No signal. Forcing RF on and LTE only...");
+        modem.sendAT("+CFUN=1");
+        modem.waitResponse(1000);
+        modem.sendAT("+CNMP=38");
+        modem.waitResponse(1000);
+        delay(5000);
+    }
+
     unsigned long start = millis();
     while ((millis() - start) < timeoutMs)
     {
-        int16_t sq = modem.getSignalQuality();
+        int16_t sqLoop = modem.getSignalQuality();
         Serial.print("Signal quality: ");
-        Serial.println(sq);
+        Serial.println(sqLoop);
 
         if (modem.isNetworkConnected())
         {
@@ -46,7 +75,6 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
             return true;
         }
 
-        // waitForNetwork blocks up to the timeout we give it
         if (modem.waitForNetwork(15000))
         {
             Serial.println("Network registered.");
@@ -126,9 +154,9 @@ void sendsms(const char *message)
             sent = modem.sendSMS(recipients[i], message);
             
             if (sent) {
-                Serial.println(" SUCCESS");
+                Serial.println("SUCCESS");
             } else {
-                Serial.println("✗ FAILED");
+                Serial.println("FAILED");
                 
                 // Try to get error code
                 Serial.print("    Getting error: ");
@@ -207,7 +235,17 @@ void setup()
     
     delay(3000);
 
-    modem.setNetworkMode(2); // Auto-select (allows fallback for SMS)
+    Serial.println("Setting network mode to LTE only...");
+    modem.setNetworkMode(38); // LTE only (better for Telcel)
+    delay(1000);
+
+    modem.sendAT("+CFUN=1");
+    modem.waitResponse(1000);
+
+    printAt("SIM status: ", "+CPIN?");
+    printAt("Operator: ", "+COPS?");
+    printAt("Reg (LTE): ", "+CEREG?");
+    printAt("Signal: ", "+CSQ");
     
     // Configure Telcel APN
     Serial.println("\nConfiguring Telcel APN...");
