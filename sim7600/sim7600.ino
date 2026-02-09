@@ -142,6 +142,74 @@ bool waitForGPS(int timeout_sec = 60)
     return false;
 }
 
+//  Send SMS with raw AT commands (bypass TinyGSM)
+bool sendSMS_Manual(const char *number, const char *message)
+{
+    Serial.print("Manual send to: ");
+    Serial.println(number);
+    
+    // Set text mode
+    modem.sendAT("+CMGF=1");
+    if (modem.waitResponse(5000) != 1) {
+        Serial.println("ERROR: Text mode failed");
+        return false;
+    }
+    
+    // Build AT+CMGS command
+    char cmd[50];
+    snprintf(cmd, sizeof(cmd), "+CMGS=\"%s\"", number);
+    
+    Serial.print("Sending: ");
+    Serial.println(cmd);
+    
+    modem.sendAT(cmd);
+    
+    // Wait for '>' prompt
+    if (modem.waitResponse(5000, ">") != 1) {
+        Serial.println("ERROR: No '>' prompt");
+        modem.stream.write((char)0x1B); // Send ESC to cancel
+        modem.waitResponse();
+        return false;
+    }
+    
+    Serial.println("Got '>' prompt, sending message...");
+    
+    // Send message text
+    modem.stream.print(message);
+    modem.stream.write((char)0x1A); // CTRL+Z to send
+    
+    // Wait for +CMGS response (message ID)
+    String response = "";
+    unsigned long start = millis();
+    bool gotCMGS = false;
+    
+    while (millis() - start < 60000) {  // 60s timeout
+        if (modem.stream.available()) {
+            char c = modem.stream.read();
+            Serial.write(c);
+            response += c;
+            
+            if (response.indexOf("+CMGS:") >= 0) {
+                gotCMGS = true;
+            }
+            
+            if (response.indexOf("OK") >= 0 && gotCMGS) {
+                Serial.println("\n✓ SMS SENT!");
+                return true;
+            }
+            
+            if (response.indexOf("ERROR") >= 0) {
+                Serial.println("\n✗ SMS ERROR");
+                return false;
+            }
+        }
+        delay(10);
+    }
+    
+    Serial.println("\n✗ SMS TIMEOUT");
+    return false;
+}
+
 //  Send SMS to all recipients
 void sendsms(const char *message)
 {
@@ -161,55 +229,34 @@ void sendsms(const char *message)
     Serial.print("Signal: ");
     Serial.println(sq);
     
-    // Try raw AT+CMGS command (more direct control)
+    // Check SMSC before sending
+    Serial.print("\nSMSC check: ");
+    modem.sendAT("+CSCA?");
+    modem.waitResponse(2000);
+    Serial.println();
+    
+    // Try manual AT command SMS (more reliable)
     for (int i = 0; i < 2; i++)
     {
-        Serial.print("\n[Recipient ");
+        Serial.print("\n========== Recipient ");
         Serial.print(i+1);
-        Serial.print("] ");
-        Serial.println(recipients[i]);
+        Serial.print(": ");
+        Serial.print(recipients[i]);
+        Serial.println(" ==========");
         
-        bool sent = false;
+        bool sent = sendSMS_Manual(recipients[i], message);
         
-        for (int attempt = 1; attempt <= 3 && !sent; attempt++) {
-            Serial.print("  Attempt ");
-            Serial.print(attempt);
-            Serial.print("/3: ");
-            
-            // Use TinyGSM built-in function
-            sent = modem.sendSMS(recipients[i], message);
-            
-            if (sent) {
-                Serial.println("SUCCESS");
-            } else {
-                Serial.println("FAILED");
-                
-                // Try to get error code
-                Serial.print("    Getting error: ");
-                modem.sendAT("+CMES?");
-                int errResp = modem.waitResponse(2000);
-                Serial.println(errResp);
-                
-                // Also check if still registered
-                Serial.print("    Network status: ");
-                if (modem.isNetworkConnected()) {
-                    Serial.println("Registered");
-                } else {
-                    Serial.println("NOT REGISTERED!");
-                }
-                
-                if (attempt < 3) {
-                    Serial.println("    Waiting 8s...");
-                    delay(8000);
-                }
-            }
+        if (sent) {
+            Serial.println("✓✓✓ SMS delivered to recipient!");
+        } else {
+            Serial.println("✗✗✗ SMS FAILED - Possible reasons:");
+            Serial.println("  1. Telcel SIM may not have international SMS enabled");
+            Serial.println("  2. Texting US numbers from Mexico requires international plan");
+            Serial.println("  3. SMSC may be incorrect for your region");
+            Serial.println("  >> Test: Put SIM in phone and try texting these US numbers");
         }
         
-        if (!sent) {
-            Serial.println("  >> Try using phone to verify SIM and SMS service");
-        }
-        
-        delay(2000);
+        delay(3000);
     }
     
     Serial.println("\n=== SMS Complete ===");
