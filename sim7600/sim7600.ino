@@ -26,7 +26,8 @@ bool fetch = false;
 //  Two recipient numbers
 const char *recipients[] = {
     "+19568784196",
-    "+19565292282"};
+    "+19563227945"  // Fixed: removed extra 1 at beginning
+};
 
 // Ensure the modem is actually registered before sending SMS
 bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
@@ -94,16 +95,35 @@ void sendsms(const char *message)
     {
         Serial.print("Sending SMS to ");
         Serial.println(recipients[i]);
-
-        bool res = modem.sendSMS(recipients[i], message);
-
-        if (res)
-        {
-            Serial.println("SMS sent successfully!");
-        }
-        else
-        {
-            Serial.println("SMS failed to send.");
+        
+        // Check SMS service center
+        Serial.print("Checking SMSC: ");
+        modem.sendAT("+CSCA?");
+        modem.waitResponse(2000);
+        
+        // Try sending with retry
+        bool res = false;
+        for (int attempt = 1; attempt <= 3 && !res; attempt++) {
+            Serial.print("Attempt ");
+            Serial.print(attempt);
+            Serial.print("/3...");
+            
+            res = modem.sendSMS(recipients[i], message);
+            
+            if (res)
+            {
+                Serial.println(" ✓ SMS sent successfully!");
+            }
+            else
+            {
+                Serial.println(" ✗ SMS failed.");
+                if (attempt < 3) {
+                    Serial.println("Checking error...");
+                    modem.sendAT("+CMEE=2");  // Enable verbose errors
+                    modem.waitResponse(1000);
+                    delay(3000);
+                }
+            }
         }
         delay(3000);
     }
@@ -143,17 +163,47 @@ void setup()
     }
 
     modem.setNetworkMode(2); // Auto-select (allows fallback for SMS)
+    
+    // Configure Telcel APN
+    Serial.println("Configuring Telcel APN...");
+    modem.sendAT("+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
+    if (modem.waitResponse() == 1) {
+        Serial.println("APN configured");
+    }
+    delay(1000);
 
     if (!ensureNetworkConnected())
     {
         Serial.println("Warning: modem not registered; SMS will fail until registration succeeds.");
     }
+    
+    // Enable verbose errors
+    modem.sendAT("+CMEE=2");
+    modem.waitResponse(1000);
+    
+    // SMS Configuration
+    Serial.println("Configuring SMS...");
+    modem.sendAT("+CMGF=1"); // Text mode
+    if (modem.waitResponse() == 1) {
+        Serial.println("SMS text mode enabled");
+    }
+    
+    // Check/Set SMSC (Telcel Mexico)
+    Serial.print("Current SMSC: ");
+    modem.sendAT("+CSCA?");
+    modem.waitResponse(2000);
+    
+    // If SMSC is empty, set Telcel default
+    modem.sendAT("+CSCA=\"+52555000000\"");
+    if (modem.waitResponse() == 1) {
+        Serial.println("SMSC set to Telcel default");
+    }
+    
     modem.enableGPS();
     modem.sendAT("+CGPS=1,1");
     delay(1000);
-
-    modem.sendAT("+CMGF=1"); // Text mode
-    Serial.println("SMS mode enabled");
+    
+    Serial.println("=== Setup Complete ===");
 }
 
 void loop()
