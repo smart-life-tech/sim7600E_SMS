@@ -1,8 +1,8 @@
 /*********************************************************** 
  * SafeWater Guardian with Push Button SMS Test
- * LilyGo A7670G
+ * LilyGo A7670G (Telcel SIM)
  * Sensors: Turbidity, TDS, pH
- * SMS Alert + GPS Location
+ * Traffic Light: Red=Alert, Yellow=Sending, Green=Safe
  ************************************************************/
 
 #define TINY_GSM_MODEM_SIM7080  // A7670G uses SIM7080 library
@@ -10,8 +10,8 @@
 #include <TinyGsmClient.h>
 
 /* ================== MODEM PINS ================== */
-#define MODEM_TX        27
-#define MODEM_RX        26
+#define MODEM_TX        17  // Changed from 27 (Yellow conflict)
+#define MODEM_RX        16  // Changed from 26 (Red conflict)
 #define MODEM_PWRKEY    4
 #define MODEM_FLIGHT    25
 #define MODEM_STATUS    34
@@ -28,9 +28,10 @@ TinyGsm modem(modemSerial);
 /* ================== PUSH BUTTON ================== */
 #define BUTTON_PIN 14   // Keyestudio button S pin
 
-/* ================== ALERT OUTPUT ================== */
-#define LED_PIN     12
-#define BUZZER_PIN  21
+/* ================== TRAFFIC LIGHT PINS ================== */
+#define RED_PIN     26
+#define YELLOW_PIN  27
+#define GREEN_PIN   12
 
 /* ================== SMS RECIPIENTS ================== */
 const char *recipients[] = {
@@ -49,7 +50,8 @@ const char *recipients[] = {
 #define PH_HIGH_DANGER    3500
 
 /* ================== GLOBALS ================== */
-float lat = 0.0, lon = 0.0;
+int lastSignal = -1;
+unsigned long lastSignalCheck = 0;
 
 /* ================== FUNCTIONS ================== */
 
@@ -122,17 +124,34 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 90000) {
   return true;
 }
 
-bool waitForGPS(int timeoutSec = 60) {
-  Serial.println("Waiting for GPS...");
-  unsigned long start = millis();
-  while ((millis() - start) < timeoutSec * 1000) {
-    if (modem.getGPS(&lat, &lon)) return true;
-    delay(500);
+bool checkSignal(uint32_t timeoutMs = 5000) {
+  int16_t rssi = modem.getSignalQuality();
+  
+  if (rssi == 99 || rssi == 0) {
+    Serial.print("⚠ Signal lost (RSSI: ");
+    Serial.print(rssi);
+    Serial.println(")");
+    return false;
   }
-  return false;
+  
+  if (lastSignal != rssi) {
+    Serial.print("Signal: ");
+    Serial.println(rssi);
+    lastSignal = rssi;
+  }
+  
+  return true;
+}
+
+void setTrafficLight(int red, int yellow, int green) {
+  digitalWrite(RED_PIN, red);
+  digitalWrite(YELLOW_PIN, yellow);
+  digitalWrite(GREEN_PIN, green);
 }
 
 void sendSMS(const char *message) {
+  setTrafficLight(0, 1, 0);  // Yellow = sending
+  
   for (int i = 0; i < 2; i++) {
     bool sent = false;
     for (int attempt = 1; attempt <= 3 && !sent; attempt++) {
@@ -143,7 +162,7 @@ void sendSMS(const char *message) {
       Serial.println(")");
 
       sent = modem.sendSMS(recipients[i], message);
-      Serial.println(sent ? " SMS sent" : " SMS failed");
+      Serial.println(sent ? "✓ SMS sent" : "✗ SMS failed");
 
       if (!sent) {
         delay(5000);
@@ -151,6 +170,8 @@ void sendSMS(const char *message) {
     }
     delay(2000);
   }
+  
+  setTrafficLight(0, 0, 1);  // Green = idle
 }
 
 void logModemStatus() {
@@ -179,15 +200,17 @@ void logModemStatus() {
   Serial.println("==================\n");
 }
 
-/* ================== SETUP ================== */
 void setup() {
   Serial.begin(115200);
   Serial.println("starting modem...");
   delay(1000);
 
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT);   // Keyestudio button
+  pinMode(RED_PIN, OUTPUT);
+  pinMode(YELLOW_PIN, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);  // Changed to INPUT_PULLUP
+  
+  setTrafficLight(0, 1, 0);  // Yellow = initialization
 
   analogReadResolution(12);
   analogSetPinAttenuation(PIN_TURB, ADC_11db);
@@ -267,15 +290,12 @@ void setup() {
     Serial.println("2. Verify SIM has active service with Telcel");
     Serial.println("3. Check antenna is connected");
     Serial.println("4. Try SIM in phone to confirm it works");
+    setTrafficLight(1, 0, 0);  // Red = error
   } else {
     Serial.println(" Network connected successfully! ");
+    setTrafficLight(0, 0, 1);  // Green = ready
   }
 
-  Serial.println("\nEnabling GPS...");
-  modem.enableGPS();
-  modem.sendAT("+CGPS=1,1");
-  modem.waitResponse(2000);
-  
   Serial.println("Setting SMS text mode...");
   modem.sendAT("+CMGF=1"); // SMS text mode
   if (modem.waitResponse() == 1) {
@@ -289,6 +309,12 @@ void setup() {
 
 /* ================== LOOP ================== */
 void loop() {
+  // Check signal regularly
+  if (millis() - lastSignalCheck > 30000) {  // Every 30 seconds
+    checkSignal();
+    lastSignalCheck = millis();
+  }
+  
   int turb = readAnalogAvg(PIN_TURB);
   int tds  = readAnalogAvg(PIN_TDS);
   int ph   = readAnalogAvg(PIN_PH);
@@ -302,74 +328,49 @@ void loop() {
   Serial.print("STATUS: "); Serial.println(status);
 
   // ===== BUTTON TEST SMS =====
-  if (digitalRead(BUTTON_PIN) == HIGH) {
-    Serial.println("Button pressed - sending test SMS");
+  if (digitalRead(BUTTON_PIN) == LOW) {  // Changed from HIGH (active LOW with INPUT_PULLUP)
+    Serial.println("\n>>> Button pressed - sending test SMS");
+    setTrafficLight(0, 1, 0);  // Yellow
 
     char testMsg[240];
-
-    if (waitForGPS(30)) {
-      snprintf(testMsg, sizeof(testMsg),
-        "SafeWater Guardian TEST\n"
-        "Status: %s\n"
-        "Turbidity: %d\n"
-        "TDS: %d\n"
-        "pH: %d\n"
-        "Location:\nhttps://maps.google.com/?q=%f,%f",
-        status.c_str(), turb, tds, ph, lat, lon);
-    } else {
-      snprintf(testMsg, sizeof(testMsg),
-        "SafeWater Guardian TEST\n"
-        "Status: %s\n"
-        "Turbidity: %d\n"
-        "TDS: %d\n"
-        "pH: %d\n"
-        "GPS unavailable",
-        status.c_str(), turb, tds, ph);
-    }
+    snprintf(testMsg, sizeof(testMsg),
+      "SafeWater Guardian TEST\n"
+      "Status: %s\n"
+      "Turbidity: %d\n"
+      "TDS: %d\n"
+      "pH: %d",
+      status.c_str(), turb, tds, ph);
 
     if (ensureNetworkConnected()) {
       sendSMS(testMsg);
     }
 
-    delay(10000); // prevent spam
+    delay(3000); // debounce
   }
 
   // ===== AUTOMATIC ALERT =====
   if (status != "SAFE") {
-    digitalWrite(LED_PIN, HIGH);
-    digitalWrite(BUZZER_PIN, HIGH);
+    setTrafficLight(1, 0, 0);  // Red alert
     delay(1000);
-    digitalWrite(BUZZER_PIN, LOW);
 
     char message[240];
-
-    if (waitForGPS(30)) {
-      snprintf(message, sizeof(message),
-        "SafeWater Guardian ALERT\n"
-        "Status: %s\n"
-        "Turbidity: %d\n"
-        "TDS: %d\n"
-        "pH: %d\n"
-        "Location:\nhttps://maps.google.com/?q=%f,%f",
-        status.c_str(), turb, tds, ph, lat, lon);
-    } else {
-      snprintf(message, sizeof(message),
-        "SafeWater Guardian ALERT\n"
-        "Status: %s\n"
-        "Turbidity: %d\n"
-        "TDS: %d\n"
-        "pH: %d\n"
-        "GPS unavailable",
-        status.c_str(), turb, tds, ph);
-    }
+    snprintf(message, sizeof(message),
+      "SafeWater Guardian ALERT\n"
+      "Status: %s\n"
+      "Turbidity: %d\n"
+      "TDS: %d\n"
+      "pH: %d",
+      status.c_str(), turb, tds, ph);
 
     if (ensureNetworkConnected()) {
       sendSMS(message);
     }
 
-    digitalWrite(LED_PIN, LOW);
+    setTrafficLight(0, 0, 1);  // Back to green
+  } else {
+    setTrafficLight(0, 0, 1);  // Green = safe
   }
 
-  delay(10000); // check every 30 seconds
+  delay(10000); // check every 10 seconds
 }
 
