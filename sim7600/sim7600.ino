@@ -54,12 +54,38 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
 
     if (sq == 99 || sq == 0)
     {
-        Serial.println("No signal. Forcing RF on and LTE only...");
+        Serial.println("No signal. Forcing RF on and trying network modes...");
         modem.sendAT("+CFUN=1");
         modem.waitResponse(1000);
+
+        Serial.println("Trying LTE only (CNMP=38)...");
         modem.sendAT("+CNMP=38");
         modem.waitResponse(1000);
-        delay(5000);
+        delay(3000);
+
+        sq = modem.getSignalQuality();
+        Serial.print("Signal quality: ");
+        Serial.println(sq);
+
+        if (sq == 99 || sq == 0)
+        {
+            Serial.println("Trying Auto (CNMP=2)...");
+            modem.sendAT("+CNMP=2");
+            modem.waitResponse(1000);
+            delay(3000);
+        }
+
+        sq = modem.getSignalQuality();
+        Serial.print("Signal quality: ");
+        Serial.println(sq);
+
+        if (sq == 99 || sq == 0)
+        {
+            Serial.println("Trying GSM only (CNMP=13)...");
+            modem.sendAT("+CNMP=13");
+            modem.waitResponse(1000);
+            delay(3000);
+        }
     }
 
     unsigned long start = millis();
@@ -271,8 +297,18 @@ void setup()
     modem.sendAT("+CSCS=\"GSM\"");
     modem.waitResponse(1000);
     delay(500);
+
+    // SMS parameters (validity, DCS)
+    modem.sendAT("+CSMP=17,167,0,0");
+    modem.waitResponse(1000);
+    delay(500);
+
+    // New message indications
+    modem.sendAT("+CNMI=2,1,0,0,0");
+    modem.waitResponse(1000);
+    delay(500);
     
-    // Check SMSC - don't set yet
+    // Check and set SMSC for Telcel
     Serial.print("Current SMSC: ");
     modem.sendAT("+CSCA?");
     int resp = modem.waitResponse(3000);
@@ -280,6 +316,16 @@ void setup()
     Serial.print(resp);
     Serial.println(")");
     delay(1000);
+
+    Serial.println("Setting SMSC to Telcel default...");
+    modem.sendAT("+CSCA=\"+52733000000\"");
+    modem.waitResponse(2000);
+    delay(500);
+
+    Serial.print("Verify SMSC: ");
+    modem.sendAT("+CSCA?");
+    modem.waitResponse(3000);
+    delay(500);
     
     // Try PDU mode SMS (sometimes more reliable)
     Serial.println("\nTrying PDU mode setting...");
