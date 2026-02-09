@@ -91,170 +91,183 @@ bool waitForGPS(int timeout_sec = 60)
 //  Send SMS to all recipients
 void sendsms(const char *message)
 {
-    // First, ensure SMSC is set
-    Serial.println("\n=== SMS Configuration Check ===");
-    Serial.print("Current SMSC: ");
-    modem.sendAT("+CSCA?");
-    modem.waitResponse(2000);
+    Serial.println("\n=== SMS SEND ATTEMPT ===");
     
-    // Set Telcel SMSC if needed
-    Serial.println("\nSetting Telcel SMSC...");
-    const char *smscNumbers[] = {
-        "+52733000000",   // Telcel Mexico primary
-        "+52155000000",   // Telcel Mexico secondary
-        "+521135000000"   // Alternative
-    };
-    
-    bool smscSet = false;
-    for (int s = 0; s < 3 && !smscSet; s++) {
-        Serial.print("Trying SMSC: ");
-        Serial.println(smscNumbers[s]);
-        
-        // Format: +CSCA="number"
-        char smscCmd[40];
-        snprintf(smscCmd, sizeof(smscCmd), "+CSCA=\"%s\"", smscNumbers[s]);
-        modem.sendAT(smscCmd);
-        
-        if (modem.waitResponse() == 1) {
-            Serial.println("  ✓ SMSC set");
-            smscSet = true;
-        } else {
-            Serial.println("  ✗ Failed");
+    // Check network again
+    if (!modem.isNetworkConnected()) {
+        Serial.println("NOT REGISTERED! Waiting for network...");
+        if (!ensureNetworkConnected()) {
+            Serial.println("FAILED: Cannot register to network");
+            return;
         }
-        delay(500);
     }
     
-    // Verify it's set
-    Serial.print("Verify SMSC now: ");
-    modem.sendAT("+CSCA?");
-    modem.waitResponse(2000);
+    // Get signal quality
+    int16_t sq = modem.getSignalQuality();
+    Serial.print("Signal: ");
+    Serial.println(sq);
     
-    Serial.println("=== Starting SMS Send ===");
-    
+    // Try raw AT+CMGS command (more direct control)
     for (int i = 0; i < 2; i++)
     {
-        Serial.print("\nSending SMS to ");
+        Serial.print("\n[Recipient ");
+        Serial.print(i+1);
+        Serial.print("] ");
         Serial.println(recipients[i]);
         
-        // Try sending with retry
-        bool res = false;
-        for (int attempt = 1; attempt <= 5 && !res; attempt++) {
+        bool sent = false;
+        
+        for (int attempt = 1; attempt <= 3 && !sent; attempt++) {
             Serial.print("  Attempt ");
             Serial.print(attempt);
-            Serial.print("/5... ");
+            Serial.print("/3: ");
             
-            res = modem.sendSMS(recipients[i], message);
+            // Use TinyGSM built-in function
+            sent = modem.sendSMS(recipients[i], message);
             
-            if (res)
-            {
-                Serial.println("✓ SENT");
-            }
-            else
-            {
+            if (sent) {
+                Serial.println(" SUCCESS");
+            } else {
                 Serial.println("✗ FAILED");
-                // Get last error
-                modem.sendAT("+CMES?");
-                modem.waitResponse(1000);
                 
-                if (attempt < 5) {
-                    Serial.print("    Waiting 5s before retry...");
-                    delay(5000);
-                    Serial.println();
+                // Try to get error code
+                Serial.print("    Getting error: ");
+                modem.sendAT("+CMES?");
+                int errResp = modem.waitResponse(2000);
+                Serial.println(errResp);
+                
+                // Also check if still registered
+                Serial.print("    Network status: ");
+                if (modem.isNetworkConnected()) {
+                    Serial.println("Registered");
+                } else {
+                    Serial.println("NOT REGISTERED!");
+                }
+                
+                if (attempt < 3) {
+                    Serial.println("    Waiting 8s...");
+                    delay(8000);
                 }
             }
         }
+        
+        if (!sent) {
+            Serial.println("  >> Try using phone to verify SIM and SMS service");
+        }
+        
         delay(2000);
     }
+    
+    Serial.println("\n=== SMS Complete ===");
 }
 
 void setup()
 {
     Serial.begin(115200);
-    delay(10);
+    delay(100);
+    Serial.println("\n\n=== SIM7600G-H Initialization ===");
 
     pinMode(LED_PIN, OUTPUT);
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     modemSerial.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
-    delay(3000);
+    delay(5000);  // Give SIM7600G time to wake up
 
+    // Power sequence for SIM7600G
     pinMode(MODEM_PWRKEY, OUTPUT);
     digitalWrite(MODEM_PWRKEY, HIGH);
-    delay(300);
+    delay(100);
     digitalWrite(MODEM_PWRKEY, LOW);
+    delay(3000);
+    digitalWrite(MODEM_PWRKEY, HIGH);
 
     pinMode(MODEM_FLIGHT, OUTPUT);
-    digitalWrite(MODEM_FLIGHT, HIGH);
+    digitalWrite(MODEM_FLIGHT, LOW); // Enable RF
 
-    Serial.println("Starting modem...");
+    Serial.println("Waiting for modem responsiveness...");
+    int attempts = 0;
+    while (!modem.testAT() && attempts < 20) {
+        Serial.print(".");
+        delay(500);
+        attempts++;
+    }
+    Serial.println();
+
+    if (attempts >= 20) {
+        Serial.println("ERROR: Modem not responding!");
+        while(1) delay(1000);
+    }
+
+    Serial.println(" Modem responding");
+
+    if (!modem.restart()) {
+        Serial.println(" Modem restart may have failed");
+    }
+    
     delay(3000);
-    while (!modem.testAT())
-    {
-        delay(10);
-    }
-
-    Serial.println("Modem initialized.");
-    if (!modem.restart())
-    {
-        Serial.println("Modem restart failed.");
-    }
 
     modem.setNetworkMode(2); // Auto-select (allows fallback for SMS)
     
     // Configure Telcel APN
-    Serial.println("Configuring Telcel APN...");
+    Serial.println("\nConfiguring Telcel APN...");
     modem.sendAT("+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
-    if (modem.waitResponse() == 1) {
-        Serial.println("APN configured");
-    }
-    delay(1000);
-    
-    // Enable verbose errors
-    modem.sendAT("+CMEE=2");
     modem.waitResponse(1000);
-    
-    // SMS Configuration - CRITICAL
-    Serial.println("\n=== SMS Setup ===");
-    modem.sendAT("+CMGF=1"); // Text mode
-    if (modem.waitResponse() == 1) {
-        Serial.println("✓ SMS text mode enabled");
-    }
     delay(500);
     
-    // Set SMS character set to ASCII
-    modem.sendAT("+CSCS=\"IRA\"");
-    modem.waitResponse(1000);
+    // SMS Configuration - CRITICAL
+    Serial.println("\n=== SMS Configuration ===");
     
-    // Check current SMSC
+    // Enable text mode
+    modem.sendAT("+CMGF=1");
+    modem.waitResponse(1000);
+    Serial.println(" Text mode enabled");
+    delay(500);
+    
+    // Enable error reporting
+    modem.sendAT("+CMEE=2");
+    modem.waitResponse(1000);
+    delay(500);
+    
+    // Try to set charset
+    modem.sendAT("+CSCS=\"GSM\"");
+    modem.waitResponse(1000);
+    delay(500);
+    
+    // Check SMSC - don't set yet
     Serial.print("Current SMSC: ");
     modem.sendAT("+CSCA?");
-    modem.waitResponse(2000);
-    
-    // Pre-set Telcel SMSC (will be reconfigured when sending)
-    Serial.println("Pre-setting Telcel SMSC...");
-    modem.sendAT("+CSCA=\"+52733000000\"");
-    if (modem.waitResponse() == 1) {
-        Serial.println("✓ SMSC set");
-    }
+    int resp = modem.waitResponse(3000);
+    Serial.print("(Response code: ");
+    Serial.print(resp);
+    Serial.println(")");
     delay(1000);
     
-    // Verify SMSC
-    Serial.print("Verify SMSC: ");
-    modem.sendAT("+CSCA?");
-    modem.waitResponse(2000);
+    // Try PDU mode SMS (sometimes more reliable)
+    Serial.println("\nTrying PDU mode setting...");
+    modem.sendAT("+CMGF=0");
+    modem.waitResponse(1000);
+    delay(500);
+    // Then back to text
+    modem.sendAT("+CMGF=1");
+    modem.waitResponse(1000);
+    
+    Serial.println("\nWaiting for network registration...");
 
     if (!ensureNetworkConnected())
     {
-        Serial.println("Warning: modem not registered; SMS will fail until registration succeeds.");
+        Serial.println(" WARNING: Not registered! SMS will fail.");
+    } else {
+        Serial.println(" Network registered - SMS should work now");
     }
     
     modem.enableGPS();
     modem.sendAT("+CGPS=1,1");
     delay(1000);
     
-    Serial.println("\n=== Setup Complete ===");
+    Serial.println("\n=== Setup Complete - Ready to Send SMS ===");
 }
+
 
 void loop()
 {
