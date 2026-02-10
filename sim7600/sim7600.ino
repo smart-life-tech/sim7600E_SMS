@@ -166,15 +166,32 @@ bool sendSMS_Manual(const char *number, const char *message)
     modem.sendAT(cmd);
 
     // Wait for '>' prompt
-    if (modem.waitResponse(5000, ">") != 1)
+    unsigned long start = millis();
+    bool gotPrompt = false;
+    while (millis() - start < 5000)
+    {
+        if (modem.stream.available())
+        {
+            char c = modem.stream.read();
+            Serial.write(c);
+            if (c == '>')
+            {
+                gotPrompt = true;
+                break;
+            }
+        }
+        delay(10);
+    }
+
+    if (!gotPrompt)
     {
         Serial.println("ERROR: No '>' prompt");
         modem.stream.write((char)0x1B); // Send ESC to cancel
-        modem.waitResponse();
+        modem.waitResponse(1000);
         return false;
     }
 
-    Serial.println("Got '>' prompt, sending message...");
+    Serial.println("\nGot '>' prompt, sending message...");
 
     // Send message text
     modem.stream.print(message);
@@ -182,7 +199,7 @@ bool sendSMS_Manual(const char *number, const char *message)
 
     // Wait for +CMGS response (message ID)
     String response = "";
-    unsigned long start = millis();
+    start = millis();
     bool gotCMGS = false;
 
     while (millis() - start < 60000)
@@ -200,20 +217,20 @@ bool sendSMS_Manual(const char *number, const char *message)
 
             if (response.indexOf("OK") >= 0 && gotCMGS)
             {
-                Serial.println("\n SMS SENT!");
+                Serial.println("\nSMS SENT!");
                 return true;
             }
 
             if (response.indexOf("ERROR") >= 0)
             {
-                Serial.println("\n SMS ERROR");
+                Serial.println("\nSMS ERROR");
                 return false;
             }
         }
         delay(10);
     }
 
-    Serial.println("\n SMS TIMEOUT");
+    Serial.println("\nSMS TIMEOUT");
     return false;
 }
 
@@ -421,9 +438,9 @@ void loop()
 {
     if (digitalRead(BUTTON_PIN) == LOW)
     {
-        Serial.println("Button Pressed! Sending alert...");
+        Serial.println("v1.0 Button Pressed! Sending alert...");
 
-        // 🔊 Buzz to alert
+        // Buzz to alert
         digitalWrite(BUZZER_PIN, HIGH);
         delay(1000);
         digitalWrite(BUZZER_PIN, LOW);
