@@ -29,85 +29,134 @@ const char *recipients[] = {
     "+19563227945" // Fixed: removed extra 1 at beginning
 };
 
-void printAt(const char *label, const char *cmd, uint32_t timeoutMs = 2000)
+void flushModem()
 {
-    Serial.print(label);
-    modem.sendAT(cmd);
-    modem.waitResponse(timeoutMs);
+    while (modemSerial.available())
+    {
+        modemSerial.read();
+    }
+}
+
+String sendATCommand(const char *cmd, uint32_t timeoutMs = 2000)
+{
+    flushModem();
+    modemSerial.print(cmd);
+    modemSerial.print("\r");
+
+    unsigned long start = millis();
+    String resp = "";
+    while (millis() - start < timeoutMs)
+    {
+        while (modemSerial.available())
+        {
+            char c = modemSerial.read();
+            resp += c;
+            Serial.write(c);
+        }
+        delay(2);
+    }
+    return resp;
+}
+
+int parseCSQ(const String &resp)
+{
+    int idx = resp.indexOf("+CSQ:");
+    if (idx < 0)
+    {
+        return 99;
+    }
+    int colon = resp.indexOf(':', idx);
+    int comma = resp.indexOf(',', colon);
+    if (colon < 0 || comma < 0)
+    {
+        return 99;
+    }
+    String val = resp.substring(colon + 1, comma);
+    val.trim();
+    return val.toInt();
+}
+
+bool isRegistered(const String &resp)
+{
+    return (resp.indexOf(",1") >= 0 || resp.indexOf(",5") >= 0);
 }
 
 // Ensure the modem is actually registered before sending SMS
 bool ensureNetworkConnected(uint32_t timeoutMs = 60000)
 {
-    Serial.println("Ensuring network registration...");
-    printAt("SIM status: ", "+CPIN?");
-    printAt("RF state: ", "+CFUN?");
-    printAt("Reg (LTE): ", "+CEREG?");
-    printAt("Reg (GSM): ", "+CREG?");
-    printAt("Reg (GPRS): ", "+CGREG?");
-    printAt("Operator: ", "+COPS?");
-    printAt("Network mode: ", "+CNMP?");
+    Serial.println("Ensuring network registration (AT only)...");
+    sendATCommand("AT");
+    sendATCommand("AT+CPIN?");
+    sendATCommand("AT+CFUN?");
+    sendATCommand("AT+COPS?");
+    sendATCommand("AT+CNMP?");
 
-    int16_t sq = modem.getSignalQuality();
+    String csqResp = sendATCommand("AT+CSQ");
+    int sq = parseCSQ(csqResp);
     Serial.print("Signal quality: ");
     Serial.println(sq);
 
     if (sq == 99 || sq == 0)
     {
         Serial.println("No signal. Forcing RF on and trying network modes...");
-        modem.sendAT("+CFUN=1");
-        modem.waitResponse(1000);
+        sendATCommand("AT+CFUN=1");
 
         Serial.println("Trying LTE only (CNMP=38)...");
-        modem.sendAT("+CNMP=38");
-        modem.waitResponse(1000);
+        sendATCommand("AT+CNMP=38");
         delay(3000);
-
-        sq = modem.getSignalQuality();
+        sq = parseCSQ(sendATCommand("AT+CSQ"));
         Serial.print("Signal quality: ");
         Serial.println(sq);
 
         if (sq == 99 || sq == 0)
         {
             Serial.println("Trying Auto (CNMP=2)...");
-            modem.sendAT("+CNMP=2");
-            modem.waitResponse(1000);
+            sendATCommand("AT+CNMP=2");
             delay(3000);
+            sq = parseCSQ(sendATCommand("AT+CSQ"));
+            Serial.print("Signal quality: ");
+            Serial.println(sq);
         }
-
-        sq = modem.getSignalQuality();
-        Serial.print("Signal quality: ");
-        Serial.println(sq);
 
         if (sq == 99 || sq == 0)
         {
             Serial.println("Trying GSM only (CNMP=13)...");
-            modem.sendAT("+CNMP=13");
-            modem.waitResponse(1000);
+            sendATCommand("AT+CNMP=13");
             delay(3000);
+            sq = parseCSQ(sendATCommand("AT+CSQ"));
+            Serial.print("Signal quality: ");
+            Serial.println(sq);
         }
     }
+
+    sendATCommand("AT+COPS=0");
 
     unsigned long start = millis();
     while ((millis() - start) < timeoutMs)
     {
-        int16_t sqLoop = modem.getSignalQuality();
-        Serial.print("Signal quality: ");
-        Serial.println(sqLoop);
-
-        if (modem.isNetworkConnected())
+        String cereg = sendATCommand("AT+CEREG?");
+        if (isRegistered(cereg))
         {
-            Serial.println("Network registered.");
+            Serial.println("Network registered (LTE).");
             return true;
         }
 
-        if (modem.waitForNetwork(15000))
+        String creg = sendATCommand("AT+CREG?");
+        if (isRegistered(creg))
         {
-            Serial.println("Network registered.");
+            Serial.println("Network registered (GSM).");
+            return true;
+        }
+
+        String cgreg = sendATCommand("AT+CGREG?");
+        if (isRegistered(cgreg))
+        {
+            Serial.println("Network registered (GPRS).");
             return true;
         }
 
         Serial.println("Network not ready, retrying...");
+        delay(3000);
     }
 
     Serial.println("Network registration timed out.");
@@ -121,13 +170,74 @@ bool waitForGPS(int timeout_sec = 60)
     unsigned long start = millis();
     while ((millis() - start) < (timeout_sec * 1000))
     {
-        if (modem.getGPS(&lat, &lon))
+        String resp = sendATCommand("AT+CGPSINFO", 2000);
+        int idx = resp.indexOf("+CGPSINFO:");
+        if (idx >= 0)
         {
-            Serial.print("GPS Fix acquired after ");
-            Serial.print((millis() - start) / 1000);
-            Serial.println(" seconds");
-            fetch = true;
-            return true;
+            String data = resp.substring(idx + 10);
+            int endLine = data.indexOf('\n');
+            if (endLine >= 0)
+            {
+                data = data.substring(0, endLine);
+            }
+            data.trim();
+
+            // Parse lat, N/S, lon, E/W
+            String field[4];
+            int f = 0;
+            String current = "";
+            for (unsigned int i = 0; i < data.length(); i++)
+            {
+                char c = data[i];
+                if (c == ',')
+                {
+                    if (f < 4)
+                    {
+                        field[f++] = current;
+                    }
+                    current = "";
+                }
+                else
+                {
+                    current += c;
+                }
+            }
+            if (f < 4)
+            {
+                field[f++] = current;
+            }
+
+            if (field[0].length() > 0 && field[2].length() > 0)
+            {
+                float latVal = field[0].toFloat();
+                float lonVal = field[2].toFloat();
+
+                int latDeg = (int)(latVal / 100);
+                float latMin = latVal - (latDeg * 100);
+                float latDec = latDeg + (latMin / 60.0f);
+
+                int lonDeg = (int)(lonVal / 100);
+                float lonMin = lonVal - (lonDeg * 100);
+                float lonDec = lonDeg + (lonMin / 60.0f);
+
+                if (field[1] == "S")
+                {
+                    latDec = -latDec;
+                }
+                if (field[3] == "W")
+                {
+                    lonDec = -lonDec;
+                }
+
+                lat = latDec;
+                lon = lonDec;
+
+                Serial.print("GPS Fix acquired after ");
+                Serial.print((millis() - start) / 1000);
+                Serial.println(" seconds");
+                fetch = true;
+                return true;
+            }
         }
 
         if ((millis() - start) % 5000 < 100)
@@ -149,12 +259,15 @@ bool sendSMS_Manual(const char *number, const char *message)
     Serial.println(number);
 
     // Set text mode
-    modem.sendAT("+CMGF=1");
-    if (modem.waitResponse(5000) != 1)
+    String resp = sendATCommand("AT+CMGF=1", 5000);
+    if (resp.indexOf("OK") < 0)
     {
         Serial.println("ERROR: Text mode failed");
         return false;
     }
+
+    sendATCommand("AT+CSCS=\"GSM\"");
+    sendATCommand("AT+CSCA?");
 
     // Build AT+CMGS command
     char cmd[50];
@@ -163,16 +276,18 @@ bool sendSMS_Manual(const char *number, const char *message)
     Serial.print("Sending: ");
     Serial.println(cmd);
 
-    modem.sendAT(cmd);
+    flushModem();
+    modemSerial.print(cmd);
+    modemSerial.print("\r");
 
     // Wait for '>' prompt
     unsigned long start = millis();
     bool gotPrompt = false;
     while (millis() - start < 5000)
     {
-        if (modem.stream.available())
+        if (modemSerial.available())
         {
-            char c = modem.stream.read();
+            char c = modemSerial.read();
             Serial.write(c);
             if (c == '>')
             {
@@ -186,16 +301,16 @@ bool sendSMS_Manual(const char *number, const char *message)
     if (!gotPrompt)
     {
         Serial.println("ERROR: No '>' prompt");
-        modem.stream.write((char)0x1B); // Send ESC to cancel
-        modem.waitResponse(1000);
+        modemSerial.write((char)0x1B); // Send ESC to cancel
+        sendATCommand("AT", 1000);
         return false;
     }
 
     Serial.println("\nGot '>' prompt, sending message...");
 
     // Send message text
-    modem.stream.print(message);
-    modem.stream.write((char)0x1A); // CTRL+Z to send
+    modemSerial.print(message);
+    modemSerial.write((char)0x1A); // CTRL+Z to send
 
     // Wait for +CMGS response (message ID)
     String response = "";
@@ -204,9 +319,9 @@ bool sendSMS_Manual(const char *number, const char *message)
 
     while (millis() - start < 60000)
     { // 60s timeout
-        if (modem.stream.available())
+        if (modemSerial.available())
         {
-            char c = modem.stream.read();
+            char c = modemSerial.read();
             Serial.write(c);
             response += c;
 
@@ -240,25 +355,19 @@ void sendsms(const char *message)
     Serial.println("\n=== SMS SEND ATTEMPT ===");
 
     // Check network again
-    if (!modem.isNetworkConnected())
+    if (!ensureNetworkConnected())
     {
-        Serial.println("NOT REGISTERED! Waiting for network...");
-        if (!ensureNetworkConnected())
-        {
-            Serial.println("FAILED: Cannot register to network");
-            return;
-        }
+        Serial.println("FAILED: Cannot register to network");
+        return;
     }
 
-    // Get signal quality
-    int16_t sq = modem.getSignalQuality();
+    String csq = sendATCommand("AT+CSQ");
+    int sq = parseCSQ(csq);
     Serial.print("Signal: ");
     Serial.println(sq);
 
-    // Check SMSC before sending
     Serial.print("\nSMSC check: ");
-    modem.sendAT("+CSCA?");
-    modem.waitResponse(2000);
+    sendATCommand("AT+CSCA?");
     Serial.println();
 
     // Try manual AT command SMS (more reliable)
@@ -317,8 +426,13 @@ void setup()
 
     Serial.println("Waiting for modem responsiveness...");
     int attempts = 0;
-    while (!modem.testAT() && attempts < 20)
+    while (attempts < 20)
     {
+        String resp = sendATCommand("AT", 1000);
+        if (resp.indexOf("OK") >= 0)
+        {
+            break;
+        }
         Serial.print(".");
         delay(500);
         attempts++;
@@ -332,50 +446,38 @@ void setup()
             delay(1000);
     }
 
-    Serial.println(" Modem responding");
-
-    if (!modem.restart())
-    {
-        Serial.println(" Modem restart may have failed");
-    }
-
-    delay(3000);
+    Serial.println("Modem responding");
 
     Serial.println("Setting network mode to LTE only...");
-    modem.setNetworkMode(38); // LTE only (better for Telcel)
+    sendATCommand("AT+CNMP=38");
     delay(1000);
 
-    modem.sendAT("+CFUN=1");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CFUN=1");
 
-    printAt("SIM status: ", "+CPIN?");
-    printAt("Operator: ", "+COPS?");
-    printAt("Reg (LTE): ", "+CEREG?");
-    printAt("Signal: ", "+CSQ");
+    sendATCommand("AT+CPIN?");
+    sendATCommand("AT+COPS?");
+    sendATCommand("AT+CEREG?");
+    sendATCommand("AT+CSQ");
 
     // Configure Telcel APN
     Serial.println("\nConfiguring Telcel APN...");
-    modem.sendAT("+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
     delay(500);
 
     // SMS Configuration - CRITICAL
     Serial.println("\n=== SMS Configuration ===");
 
     // Enable text mode
-    modem.sendAT("+CMGF=1");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CMGF=1");
     Serial.println(" Text mode enabled");
     delay(500);
 
     // Enable error reporting
-    modem.sendAT("+CMEE=2");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CMEE=2");
     delay(500);
 
     // Try to set charset
-    modem.sendAT("+CSCS=\"GSM\"");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CSCS=\"GSM\"");
     delay(500);
 
     // SMS parameters (validity, DCS)
@@ -390,10 +492,9 @@ void setup()
 
     // Check and set SMSC for Telcel
     Serial.print("Current SMSC: ");
-    modem.sendAT("+CSCA?");
-    int resp = modem.waitResponse(3000);
-    Serial.print("(Response code: ");
-    Serial.print(resp);
+    String resp = sendATCommand("AT+CSCA?", 3000);
+    Serial.print("(Response length: ");
+    Serial.print(resp.length());
     Serial.println(")");
     delay(1000);
 
@@ -409,12 +510,10 @@ void setup()
 
     // Try PDU mode SMS (sometimes more reliable)
     Serial.println("\nTrying PDU mode setting...");
-    modem.sendAT("+CMGF=0");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CMGF=0");
     delay(500);
     // Then back to text
-    modem.sendAT("+CMGF=1");
-    modem.waitResponse(1000);
+    sendATCommand("AT+CMGF=1");
 
     Serial.println("\nWaiting for network registration...");
 
@@ -427,8 +526,7 @@ void setup()
         Serial.println(" Network registered - SMS should work now");
     }
 
-    modem.enableGPS();
-    modem.sendAT("+CGPS=1,1");
+    sendATCommand("AT+CGPS=1,1");
     delay(1000);
 
     Serial.println("\n=== Setup Complete - Ready to Send SMS ===");
