@@ -116,33 +116,50 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 60000) {
 }
 
 bool sendSMS_Manual(const char *number, const char *message) {
-  Serial.print("Manual send to: ");
+  Serial.print("\n[SMS] Sending to: ");
   Serial.println(number);
 
+  // Step 1: Text mode
   String resp = sendAT("AT+CMGF=1", 5000);
   if (resp.indexOf("OK") < 0) {
-    Serial.println("ERROR: Text mode failed");
+    Serial.println("[SMS] ERROR: Text mode failed");
     return false;
   }
+  Serial.println("[SMS] Text mode: OK");
 
+  // Step 2: Character set
   sendAT("AT+CSCS=\"GSM\"");
-  sendAT("AT+CSCA?");
+  
+  // Step 3: Check SMSC
+  String smsc_resp = sendAT("AT+CSCA?", 2000);
+  Serial.print("[SMS] SMSC: ");
+  Serial.println(smsc_resp);
 
-  char cmd[50];
+  // Step 4: Send CMGS command
+  char cmd[60];
   snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", number);
-
+  
+  Serial.print("[SMS] Sending: ");
+  Serial.println(cmd);
+  
   flushModem();
   modemSerial.print(cmd);
   modemSerial.print("\r");
 
+  // Step 5: Wait for > prompt
   unsigned long start = millis();
   bool gotPrompt = false;
+  String promptResp = "";
+  
   while (millis() - start < 5000) {
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
+      promptResp += c;
+      
       if (c == '>') {
         gotPrompt = true;
+        Serial.println("\n[SMS] GOT > PROMPT");
         break;
       }
     }
@@ -150,67 +167,78 @@ bool sendSMS_Manual(const char *number, const char *message) {
   }
 
   if (!gotPrompt) {
-    Serial.println("ERROR: No '>' prompt");
+    Serial.println("[SMS] ERROR: No > prompt received");
+    Serial.println("[SMS] Response was:");
+    Serial.println(promptResp);
     modemSerial.write((char)0x1B); // ESC to cancel
+    delay(100);
     sendAT("AT", 1000);
     return false;
   }
 
-  Serial.println("\nGot '>' prompt, sending message...");
-  delay(100);  // Give modem time to be ready for message
+  // Step 6: Send message text
+  Serial.println("[SMS] NOW SENDING MESSAGE TEXT...");
+  delay(200);  // Wait after > before sending text
   
-  // Send message text
-  modemSerial.print(message);
-  Serial.print("[MSG: ");
-  Serial.print(message);
-  Serial.println("]");
+  int msgLen = strlen(message);
+  Serial.print("[SMS] Message length: ");
+  Serial.println(msgLen);
+  Serial.print("[SMS] Message content: ");
+  Serial.println(message);
   
-  delay(500);  // Wait for modem to process message text
+  // Send message character by character with feedback
+  for (int i = 0; i < msgLen; i++) {
+    modemSerial.write((uint8_t)message[i]);
+    Serial.write(message[i]);
+  }
+  Serial.println();
+  Serial.println("[SMS] Message text sent");
   
-  // Send CTRL+Z to submit
-  Serial.println("[Sending CTRL+Z...]");
-  modemSerial.write((char)0x1A);
+  delay(300);  // Let modem process
+  
+  // Step 7: Send CTRL+Z (0x1A)
+  Serial.println("[SMS] SENDING CTRL+Z (0x1A)...");
+  modemSerial.write(0x1A);
+  Serial.println("[SMS] CTRL+Z sent");
 
+  // Step 8: Wait for completion
   String response = "";
   start = millis();
   
-  // Wait for response - could be OK, +CMGS:, or ERROR
+  Serial.println("[SMS] Waiting for response (max 15s)...");
   while (millis() - start < 15000) {
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
       response += c;
       
-      // Success: OK
+      // Check for success indicators
       if (response.indexOf("OK") >= 0) {
-        Serial.println("\n[SMS SENT - Got OK]");
+        Serial.println("\n[SMS] *** SUCCESS - Got OK ***");
         return true;
       }
       
-      // Success: +CMGS: (message ID)
       if (response.indexOf("+CMGS:") >= 0) {
-        Serial.println("\n[SMS SENT - Got +CMGS]");
+        Serial.println("\n[SMS] *** SUCCESS - Got +CMGS ***");
         return true;
       }
       
-      // Failure: ERROR
+      // Check for error
       if (response.indexOf("ERROR") >= 0) {
-        Serial.println("\n[SMS FAILED - Got ERROR]");
+        Serial.println("\n[SMS] *** FAILED - Got ERROR ***");
         return false;
       }
     }
-    delay(10);
+    delay(5);
   }
   
-  // Timeout - no response
-  Serial.println("\n[TIMEOUT waiting for SMS confirmation]");
-  Serial.println("[Check if SMS was silently queued by modem]");
-  
-  // Send AT to clear buffer and check modem is still responsive
+  // Timeout
+  Serial.println("\n[SMS] *** TIMEOUT - No response after 15 seconds ***");
+  Serial.println("[SMS] Sending AT to recover...");
   delay(500);
-  sendAT("AT", 1000);
+  sendAT("AT", 2000);
   
-  return false;  // Return false on timeout so we can retry
+  return false;
 }
 
 void setup() {
@@ -263,7 +291,7 @@ void setup() {
     Serial.println("Network registered.");
   }
 
-  Serial.println("Ready. Press button to send SMS v4.");
+  Serial.println("Ready. Press button to send SMS v4.6 test.");
 }
 
 void loop() {
