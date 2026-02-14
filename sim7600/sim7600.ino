@@ -37,6 +37,47 @@ String sendAT(const char *cmd, uint32_t timeoutMs = 2000) {
   return resp;
 }
 
+// Send AT command and wait for specific response
+bool sendATcommand(const char *cmd, const char *expectedResponse, uint32_t timeoutMs) {
+  flushModem();
+  
+  // Send command if not empty
+  if (strlen(cmd) > 0) {
+    Serial.print("[AT] > ");
+    Serial.println(cmd);
+    modemSerial.print(cmd);
+    modemSerial.print("\r");
+  }
+  
+  unsigned long start = millis();
+  String response = "";
+  
+  while (millis() - start < timeoutMs) {
+    if (modemSerial.available()) {
+      char c = modemSerial.read();
+      Serial.write(c);
+      response += c;
+      
+      // Check if expected response is in the buffer
+      if (response.indexOf(expectedResponse) >= 0) {
+        Serial.print("[AT] Got: ");
+        Serial.println(expectedResponse);
+        return true;
+      }
+      
+      // Also check for ERROR as failure
+      if (response.indexOf("ERROR") >= 0) {
+        Serial.println("[AT] Got ERROR");
+        return false;
+      }
+    }
+    delay(5);
+  }
+  
+  Serial.println("[AT] TIMEOUT");
+  return false;
+}
+
 int parseCSQ(const String &resp) {
   int idx = resp.indexOf("+CSQ:");
   if (idx < 0) return 99;
@@ -116,136 +157,46 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 60000) {
 }
 
 bool sendSMS_Manual(const char *number, const char *message) {
-  Serial.print("\n[SMS] === SENDING TO: ");
-  Serial.print(number);
-  Serial.println(" ===");
-
-  // STEP 1: Set local SMS center (SMSC) - following exact protocol
-  Serial.println("[SMS] Step 1: Setting SMSC...");
-  String smsc_set = sendAT("AT+CSCA=\"+5294100001410\"", 3000);
-  Serial.println(smsc_set);
+  Serial.println("\n[SMS] === SENDING SHORT MESSAGE ===");
   
-  if (smsc_set.indexOf("OK") < 0) {
-    Serial.println("[SMS] WARNING: SMSC set may have failed, continuing...");
-  }
-  
-  // Verify SMSC was set
-  String smsc_check = sendAT("AT+CSCA?", 2000);
-  Serial.print("[SMS] Current SMSC: ");
-  Serial.println(smsc_check);
-
-  // STEP 2: Set text mode
-  Serial.println("[SMS] Step 2: Setting TEXT mode...");
-  String textMode = sendAT("AT+CMGF=1", 3000);
-  if (textMode.indexOf("OK") < 0) {
-    Serial.println("[SMS] ERROR: Text mode failed");
+  // Step 1: Set SMS mode to TEXT
+  Serial.println("[SMS] Setting SMS mode to TEXT...");
+  if (!sendATcommand("AT+CMGF=1", "OK", 1000)) {
+    Serial.println("[SMS] ERROR: Could not set text mode");
     return false;
   }
-  Serial.println("[SMS] Text mode OK");
-
-  // STEP 3: Set character set
-  Serial.println("[SMS] Step 3: Setting character set...");
-  sendAT("AT+CSCS=\"GSM\"", 2000);
-
-  // STEP 4: Send CMGS with phone number
-  Serial.println("[SMS] Step 4: Sending AT+CMGS command...");
+  
+  // Step 2: Send AT+CMGS with phone number
+  Serial.print("[SMS] Sending to: ");
+  Serial.println(number);
+  
   char cmd[70];
-  snprintf(cmd, sizeof(cmd), "AT+CMGS=\"%s\"", number);
+  sprintf(cmd, "AT+CMGS=\"%s\"", number);
   
-  Serial.print("[SMS] Command: ");
-  Serial.println(cmd);
-  
-  flushModem();
-  modemSerial.print(cmd);
-  modemSerial.print("\r");
-
-  // STEP 5: Wait for > prompt
-  Serial.println("[SMS] Step 5: Waiting for '>' prompt...");
-  unsigned long start = millis();
-  bool gotPrompt = false;
-  
-  while (millis() - start < 10000) {
-    if (modemSerial.available()) {
-      char c = modemSerial.read();
-      Serial.write(c);
-      
-      if (c == '>') {
-        gotPrompt = true;
-        Serial.println("\n[SMS] *** GOT > PROMPT ***");
-        break;
-      }
-    }
-    delay(5);
-  }
-
-  if (!gotPrompt) {
-    Serial.println("[SMS] ERROR: No '>' prompt - aborting");
-    modemSerial.write((char)0x1B); // Send ESC to cancel
-    delay(200);
-    sendAT("AT", 1000);
+  if (!sendATcommand(cmd, ">", 3000)) {
+    Serial.println("[SMS] ERROR: No '>' prompt");
     return false;
   }
-
-  // STEP 6: Send the message text
-  Serial.println("[SMS] Step 6: Sending message text...");
-  delay(300);
   
-  int msgLen = strlen(message);
-  Serial.print("[SMS] Sending ");
-  Serial.print(msgLen);
-  Serial.println(" characters:");
+  // Step 3: Send message text
+  Serial.println("[SMS] Sending message text...");
+  Serial.println(message);
+  modemSerial.println(message);
   
-  // Send all message characters
-  modemSerial.print(message);
-  Serial.print(message);
-  Serial.println();
+  // Step 4: Send CTRL+Z (0x1A) to submit
+  Serial.println("[SMS] Sending CTRL+Z...");
+  Serial.write(0x1A);
+  modemSerial.write(0x1A);
   
-  delay(300);
-
-  // STEP 7: Send CTRL+Z (0x1A hex) to submit
-  Serial.println("[SMS] Step 7: Sending CTRL+Z (0x1A)...");
-  modemSerial.write(0x1A);  // Send as raw byte 0x1A
-  Serial.println("[SMS] CTRL+Z sent");
-
-  // STEP 8: Wait for +CMGS response or OK
-  Serial.println("[SMS] Step 8: Waiting for confirmation...");
-  String response = "";
-  start = millis();
-  
-  while (millis() - start < 25000) {  // Wait up to 25 seconds
-    if (modemSerial.available()) {
-      char c = modemSerial.read();
-      Serial.write(c);
-      response += c;
-      
-      // Look for +CMGS: (message ID response)
-      if (response.indexOf("+CMGS:") >= 0) {
-        Serial.println("\n[SMS] *** SUCCESS - Got +CMGS response ***");
-        return true;
-      }
-      
-      // Also accept bare OK
-      if (response.indexOf("OK") >= 0 && response.indexOf("+CMGS:") < 0) {
-        Serial.println("\n[SMS] *** SUCCESS - Got OK ***");
-        return true;
-      }
-      
-      // Check for error
-      if (response.indexOf("ERROR") >= 0) {
-        Serial.println("\n[SMS] *** FAILED - Got ERROR response ***");
-        return false;
-      }
-    }
-    delay(10);
+  // Step 5: Wait for OK confirmation (up to 20 seconds)
+  Serial.println("[SMS] Waiting for confirmation...");
+  if (sendATcommand("", "OK", 20000)) {
+    Serial.println("[SMS] *** SUCCESS - Message sent ***");
+    return true;
+  } else {
+    Serial.println("[SMS] *** FAILED - No OK response ***");
+    return false;
   }
-  
-  // Timeout after 25 seconds
-  Serial.println("\n[SMS] *** TIMEOUT - No confirmation after 25 seconds ***");
-  Serial.println("[SMS] Sending AT to check modem state...");
-  delay(300);
-  sendAT("AT", 2000);
-  
-  return false;
 }
 
 void setup() {
@@ -286,16 +237,6 @@ void setup() {
   sendAT("AT+CMEE=2");
   sendAT("AT+CMGF=1");
   sendAT("AT+CSCS=\"GSM\"");
-  
-  // Set Telcel Mexico SMSC for SIM7600NA
-  Serial.println("Setting Telcel Mexico SMSC for SIM7600NA...");
-  // SIM7600NA may use different SMSC format
-  // Try the actual Telcel service center numbers
-  sendAT("AT+CSCA=\"+5294100001410\"");  // Telcel main
-  delay(200);
-  String csca = sendAT("AT+CSCA?", 2000);
-  Serial.println("Current SMSC setting:");
-  Serial.println(csca);
 
   if (!ensureNetworkConnected()) {
     Serial.println("WARNING: Not registered. SMS will fail.");
