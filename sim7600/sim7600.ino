@@ -157,44 +157,60 @@ bool sendSMS_Manual(const char *number, const char *message) {
   }
 
   Serial.println("\nGot '>' prompt, sending message...");
+  delay(100);  // Give modem time to be ready for message
+  
+  // Send message text
   modemSerial.print(message);
-  modemSerial.write((char)0x1A); // CTRL+Z
+  Serial.print("[MSG: ");
+  Serial.print(message);
+  Serial.println("]");
+  
+  delay(500);  // Wait for modem to process message text
+  
+  // Send CTRL+Z to submit
+  Serial.println("[Sending CTRL+Z...]");
+  modemSerial.write((char)0x1A);
 
   String response = "";
   start = millis();
-  bool sentCTRLZ = true;
   
-  // Wait shorter time first, then accept success
-  while (millis() - start < 10000) {  // First 10s for confirmation
+  // Wait for response - could be OK, +CMGS:, or ERROR
+  while (millis() - start < 15000) {
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
       response += c;
       
-      // Accept OK or +CMGS as success
-      if (response.indexOf("OK") >= 0 || response.indexOf("+CMGS:") >= 0) {
-        Serial.println("\nSMS appears to have been sent!");
+      // Success: OK
+      if (response.indexOf("OK") >= 0) {
+        Serial.println("\n[SMS SENT - Got OK]");
         return true;
       }
       
-      // Accept ERROR
+      // Success: +CMGS: (message ID)
+      if (response.indexOf("+CMGS:") >= 0) {
+        Serial.println("\n[SMS SENT - Got +CMGS]");
+        return true;
+      }
+      
+      // Failure: ERROR
       if (response.indexOf("ERROR") >= 0) {
-        Serial.println("\nSMS ERROR");
+        Serial.println("\n[SMS FAILED - Got ERROR]");
         return false;
       }
     }
     delay(10);
   }
   
-  // If no response after 10s, check if at least the CTRL+Z was processed
-  Serial.println("\nNo immediate confirmation, but message may have been queued.");
-  Serial.println("Checking modem status...");
-  sendAT("AT");  // Quick check
+  // Timeout - no response
+  Serial.println("\n[TIMEOUT waiting for SMS confirmation]");
+  Serial.println("[Check if SMS was silently queued by modem]");
   
-  // Many SIM7600 units send SMS but don't echo confirmation
-  // If CTRL+Z was sent and we got > prompt, it likely went through
-  Serial.println("Assuming SMS sent (modem may not echo confirmation)");
-  return true;
+  // Send AT to clear buffer and check modem is still responsive
+  delay(500);
+  sendAT("AT", 1000);
+  
+  return false;  // Return false on timeout so we can retry
 }
 
 void setup() {
@@ -252,25 +268,38 @@ void setup() {
 
 void loop() {
   if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("\nButton pressed. Sending SMS to +19568784196...");
-    if (!ensureNetworkConnected(5000)) {
+    Serial.println("\n=== BUTTON PRESSED ===");
+    
+    // Re-check network before sending
+    int sq = parseCSQ(sendAT("AT+CSQ"));
+    Serial.print("Current signal: ");
+    Serial.println(sq);
+    
+    if (!ensureNetworkConnected(10000)) {
       Serial.println("Cannot send SMS: not registered.");
       delay(3000);
       return;
     }
 
     const char *msg = "Test SMS from SIM7600 LilyGo";
-    bool sent = sendSMS_Manual("+19568784196", msg);
+    const char *number = "+19568784196";
+    
+    Serial.print("Attempting SMS to: ");
+    Serial.println(number);
+    
+    bool sent = sendSMS_Manual(number, msg);
     
     if (sent) {
-      Serial.println("SUCCESS!");
+      Serial.println("\n*** SUCCESS - SMS SUBMITTED ***");
     } else {
-      Serial.println("\n*** Send failed ***");
-      Serial.println("Possible issues:");
-      Serial.println("1. Telcel SIM may not have international SMS enabled");
-      Serial.println("2. Test SIM in phone to confirm SMS service works");
+      Serial.println("\n*** FAILED - SMS NOT SENT ***");
+      Serial.println("Diagnostics:");
+      Serial.println("- Check Telcel SIM has international SMS enabled");
+      Serial.println("- Verify with your phone first: can you text +19568784196?");
+      Serial.println("- Check recipient number format (US numbers may be blocked)");
     }
 
+    // Prevent repeated presses
     delay(5000);
   }
 }
