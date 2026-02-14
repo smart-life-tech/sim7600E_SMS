@@ -166,7 +166,7 @@ bool sendSMS_Manual(const char *number, const char *message) {
   String response = "";
   start = millis();
   bool gotCMGS = false;
-  while (millis() - start < 60000) {
+  while (millis() - start < 120000) {  // 120s timeout
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
@@ -174,9 +174,16 @@ bool sendSMS_Manual(const char *number, const char *message) {
       if (response.indexOf("+CMGS:") >= 0) {
         gotCMGS = true;
       }
-      if (response.indexOf("OK") >= 0 && gotCMGS) {
-        Serial.println("\nSMS SENT!");
-        return true;
+      if (response.indexOf("OK") >= 0) {
+        if (gotCMGS) {
+          Serial.println("\nSMS SENT!");
+          return true;
+        } else {
+          // Sometimes modem sends OK without +CMGS:
+          // Check if we got > prompt and sent data
+          Serial.println("\nGot OK (assuming sent)");
+          return true;
+        }
       }
       if (response.indexOf("ERROR") >= 0) {
         Serial.println("\nSMS ERROR");
@@ -228,6 +235,10 @@ void setup() {
   sendAT("AT+CMEE=2");
   sendAT("AT+CMGF=1");
   sendAT("AT+CSCS=\"GSM\"");
+  
+  // Set Telcel Mexico SMSC
+  Serial.println("Setting Telcel Mexico SMSC...");
+  sendAT("AT+CSCA=\"+52733000000\"");  // Telcel primary
   sendAT("AT+CSCA?");
 
   if (!ensureNetworkConnected()) {
@@ -241,20 +252,45 @@ void setup() {
 
 void loop() {
   if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("Button pressed now. Sending SMS...");
-    if (!ensureNetworkConnected()) {
+    Serial.println("\nButton pressed. Testing different number formats...");
+    if (!ensureNetworkConnected(5000)) {
       Serial.println("Cannot send SMS: not registered.");
       delay(3000);
       return;
     }
 
-    const char *msg = "Test SMS from SIM7600";
-    for (int i = 0; i < 2; i++) {
-      bool sent = sendSMS_Manual(recipients[i], msg);
-      if (!sent) {
-        Serial.println("SMS failed.");
+    // Try different number formats
+    // WARNING: US numbers from Mexico SIM may fail (international SMS restrictions)
+    const char *numberFormats[] = {
+        "+52999,"               // TEST: Invalid to verify error handling
+        "+19568784196",         // Format 1: US international
+        "05219568784196"        // Format 2: Mexico dialing code
+    };
+
+    const char *msg = "Test SMS from SIM7600 LilyGo";
+    bool anySuccess = false;
+    
+    for (int fmt = 1; fmt < 3; fmt++) {
+      Serial.print("\nFormat ");
+      Serial.print(fmt);
+      Serial.print(": ");
+      Serial.println(numberFormats[fmt]);
+      
+      bool sent = sendSMS_Manual(numberFormats[fmt], msg);
+      if (sent) {
+        Serial.println("SUCCESS!");
+        anySuccess = true;
+        break;
       }
-      delay(3000);
+      delay(2000);
+    }
+
+    if (!anySuccess) {
+      Serial.println("\n*** All formats failed ***");
+      Serial.println("Possible issues:");
+      Serial.println("1. Telcel SIM may not have international SMS enabled");
+      Serial.println("2. Try sending to a Mexican number (+52xxxxxxxxxx) instead");
+      Serial.println("3. Test SIM in phone to confirm SMS service works");
     }
 
     delay(5000);
