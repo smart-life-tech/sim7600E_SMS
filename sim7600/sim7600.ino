@@ -128,7 +128,7 @@ bool sendSMS_Manual(const char *number, const char *message) {
   Serial.println("[SMS] Text mode: OK");
 
   // Step 2: Character set
-  sendAT("AT+CSCS=\"GSM\"");
+  sendAT("AT+CSCS=\"GSM\"", 2000);
   
   // Step 3: Check SMSC
   String smsc_resp = sendAT("AT+CSCA?", 2000);
@@ -146,12 +146,12 @@ bool sendSMS_Manual(const char *number, const char *message) {
   modemSerial.print(cmd);
   modemSerial.print("\r");
 
-  // Step 5: Wait for > prompt
+  // Step 5: Wait for > prompt (SIM7600NA may take longer)
   unsigned long start = millis();
   bool gotPrompt = false;
   String promptResp = "";
   
-  while (millis() - start < 5000) {
+  while (millis() - start < 8000) {  // Longer timeout for SIM7600NA
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
@@ -177,16 +177,16 @@ bool sendSMS_Manual(const char *number, const char *message) {
   }
 
   // Step 6: Send message text
-  Serial.println("[SMS] NOW SENDING MESSAGE TEXT...");
-  delay(200);  // Wait after > before sending text
+  // SIM7600NA: wait longer after > before sending message
+  Serial.println("[SMS] Got prompt, waiting before sending message...");
+  delay(500);  // Increased from 200ms
   
+  Serial.println("[SMS] NOW SENDING MESSAGE TEXT...");
   int msgLen = strlen(message);
   Serial.print("[SMS] Message length: ");
   Serial.println(msgLen);
-  Serial.print("[SMS] Message content: ");
-  Serial.println(message);
   
-  // Send message character by character with feedback
+  // Send message character by character
   for (int i = 0; i < msgLen; i++) {
     modemSerial.write((uint8_t)message[i]);
     Serial.write(message[i]);
@@ -194,7 +194,7 @@ bool sendSMS_Manual(const char *number, const char *message) {
   Serial.println();
   Serial.println("[SMS] Message text sent");
   
-  delay(300);  // Let modem process
+  delay(500);  // Wait for modem to process (important for SIM7600NA)
   
   // Step 7: Send CTRL+Z (0x1A)
   Serial.println("[SMS] SENDING CTRL+Z (0x1A)...");
@@ -205,8 +205,8 @@ bool sendSMS_Manual(const char *number, const char *message) {
   String response = "";
   start = millis();
   
-  Serial.println("[SMS] Waiting for response (max 15s)...");
-  while (millis() - start < 15000) {
+  Serial.println("[SMS] Waiting for response (max 20s for SIM7600NA)...");
+  while (millis() - start < 20000) {  // Longer for NA variant
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
@@ -233,8 +233,8 @@ bool sendSMS_Manual(const char *number, const char *message) {
   }
   
   // Timeout
-  Serial.println("\n[SMS] *** TIMEOUT - No response after 15 seconds ***");
-  Serial.println("[SMS] Sending AT to recover...");
+  Serial.println("\n[SMS] *** TIMEOUT - No response after 20 seconds ***");
+  Serial.println("[SMS] Sending AT to recover modem...");
   delay(500);
   sendAT("AT", 2000);
   
@@ -280,10 +280,15 @@ void setup() {
   sendAT("AT+CMGF=1");
   sendAT("AT+CSCS=\"GSM\"");
   
-  // Set Telcel Mexico SMSC
-  Serial.println("Setting Telcel Mexico SMSC...");
-  sendAT("AT+CSCA=\"+52733000000\"");  // Telcel primary
-  sendAT("AT+CSCA?");
+  // Set Telcel Mexico SMSC for SIM7600NA
+  Serial.println("Setting Telcel Mexico SMSC for SIM7600NA...");
+  // SIM7600NA may use different SMSC format
+  // Try the actual Telcel service center numbers
+  sendAT("AT+CSCA=\"+5294100001410\"");  // Telcel main
+  delay(200);
+  String csca = sendAT("AT+CSCA?", 2000);
+  Serial.println("Current SMSC setting:");
+  Serial.println(csca);
 
   if (!ensureNetworkConnected()) {
     Serial.println("WARNING: Not registered. SMS will fail.");
@@ -291,12 +296,12 @@ void setup() {
     Serial.println("Network registered.");
   }
 
-  Serial.println("Ready. Press button to send SMS v4.6 test.");
+  Serial.println("Ready. Press button to send SMS (SIM7600NA).");
 }
 
 void loop() {
   if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("\n=== BUTTON PRESSED ===");
+    Serial.println("\n=== BUTTON PRESSED (SIM7600NA) ===");
     
     // Re-check network before sending
     int sq = parseCSQ(sendAT("AT+CSQ"));
@@ -315,19 +320,48 @@ void loop() {
     Serial.print("Attempting SMS to: ");
     Serial.println(number);
     
+    // Try text mode first
     bool sent = sendSMS_Manual(number, msg);
     
     if (sent) {
-      Serial.println("\n*** SUCCESS - SMS SUBMITTED ***");
+      Serial.println("\n*** SUCCESS - SMS SUBMITTED (Text Mode) ***");
     } else {
-      Serial.println("\n*** FAILED - SMS NOT SENT ***");
-      Serial.println("Diagnostics:");
-      Serial.println("- Check Telcel SIM has international SMS enabled");
-      Serial.println("- Verify with your phone first: can you text +19568784196?");
-      Serial.println("- Check recipient number format (US numbers may be blocked)");
+      Serial.println("\n*** Text mode failed, trying PDU mode... ***");
+      // Try PDU mode as fallback for SIM7600NA
+      sent = sendSMS_PDU(number, msg);
+      
+      if (sent) {
+        Serial.println("\n*** SUCCESS - SMS SUBMITTED (PDU Mode) ***");
+      } else {
+        Serial.println("\n*** FAILED - SMS NOT SENT (both modes) ***");
+        Serial.println("Diagnostics for SIM7600NA:");
+        Serial.println("1. Verify Telcel SIM has international SMS enabled");
+        Serial.println("2. Check if phone can send to +19568784196");
+        Serial.println("3. Try Mexican number: +52 format");
+        Serial.println("4. Check modem power (needs 2A at 5V)");
+      }
     }
 
     // Prevent repeated presses
     delay(5000);
   }
+}
+
+bool sendSMS_PDU(const char *number, const char *message) {
+  Serial.println("[SMS-PDU] Switching to PDU mode...");
+  
+  // Switch to PDU mode
+  String resp = sendAT("AT+CMGF=0", 5000);
+  if (resp.indexOf("OK") < 0) {
+    Serial.println("[SMS-PDU] ERROR: Could not switch to PDU mode");
+    return false;
+  }
+  
+  Serial.println("[SMS-PDU] PDU mode enabled");
+  
+  // For now, switch back and report
+  sendAT("AT+CMGF=1", 2000);  // Back to text mode
+  
+  Serial.println("[SMS-PDU] PDU mode not fully implemented yet");
+  return false;
 }
