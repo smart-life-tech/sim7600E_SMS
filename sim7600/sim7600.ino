@@ -68,11 +68,8 @@ bool ensureNetworkConnected(uint32_t timeoutMs = 60000) {
   Serial.println(sq);
 
   if (sq == 99 || sq == 0) {
-    Serial.println("No signal. Forcing RF on and trying network modes...");
-    sendAT("AT+CFUN=1");
-
-    Serial.println("Trying LTE only (CNMP=38)...");
-    sendAT("AT+CNMP=38");
+    Serial.println("No signal. Trying Auto mode...");
+    sendAT("AT+CNMP=2");
     delay(3000);
     sq = parseCSQ(sendAT("AT+CSQ"));
     Serial.print("Signal quality: ");
@@ -201,17 +198,15 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   modemSerial.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
-  delay(5000);
+  delay(3000);
 
   pinMode(MODEM_PWRKEY, OUTPUT);
   digitalWrite(MODEM_PWRKEY, HIGH);
-  delay(100);
+  delay(300);
   digitalWrite(MODEM_PWRKEY, LOW);
-  delay(3000);
-  digitalWrite(MODEM_PWRKEY, HIGH);
 
   pinMode(MODEM_FLIGHT, OUTPUT);
-  digitalWrite(MODEM_FLIGHT, LOW); // RF on
+  digitalWrite(MODEM_FLIGHT, HIGH);
 
   Serial.println("Waiting for modem...");
   for (int i = 0; i < 20; i++) {
@@ -225,9 +220,8 @@ void setup() {
 
   sendAT("ATE0");
 
-  Serial.println("Setting LTE mode and APN...");
-  sendAT("AT+CFUN=1");
-  sendAT("AT+CNMP=38");
+  Serial.println("Setting network mode and APN...");
+  sendAT("AT+CNMP=2");
   sendAT("AT+CGDCONT=1,\"IP\",\"internet.itelcel.com\"");
 
   Serial.println("SMS config...");
