@@ -236,12 +236,12 @@ void setup() {
     Serial.println("Network registered.");
   }
 
-  Serial.println("Ready. Press button to send SMS.");
+  Serial.println("Ready. Press button to send SMS v4.");
 }
 
 void loop() {
   if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("Button pressed. Sending SMS...");
+    Serial.println("Button pressed now. Sending SMS...");
     if (!ensureNetworkConnected()) {
       Serial.println("Cannot send SMS: not registered.");
       delay(3000);
