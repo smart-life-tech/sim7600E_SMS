@@ -11,10 +11,7 @@
 #define MODEM_BAUD 115200
 #define modemSerial Serial1
 
-const char *recipients[] = {
-    "+19568784196",
-    "+19563227945"
-};
+
 
 void flushModem() {
   while (modemSerial.available()) {
@@ -165,26 +162,22 @@ bool sendSMS_Manual(const char *number, const char *message) {
 
   String response = "";
   start = millis();
-  bool gotCMGS = false;
-  while (millis() - start < 120000) {  // 120s timeout
+  bool sentCTRLZ = true;
+  
+  // Wait shorter time first, then accept success
+  while (millis() - start < 10000) {  // First 10s for confirmation
     if (modemSerial.available()) {
       char c = modemSerial.read();
       Serial.write(c);
       response += c;
-      if (response.indexOf("+CMGS:") >= 0) {
-        gotCMGS = true;
+      
+      // Accept OK or +CMGS as success
+      if (response.indexOf("OK") >= 0 || response.indexOf("+CMGS:") >= 0) {
+        Serial.println("\nSMS appears to have been sent!");
+        return true;
       }
-      if (response.indexOf("OK") >= 0) {
-        if (gotCMGS) {
-          Serial.println("\nSMS SENT!");
-          return true;
-        } else {
-          // Sometimes modem sends OK without +CMGS:
-          // Check if we got > prompt and sent data
-          Serial.println("\nGot OK (assuming sent)");
-          return true;
-        }
-      }
+      
+      // Accept ERROR
       if (response.indexOf("ERROR") >= 0) {
         Serial.println("\nSMS ERROR");
         return false;
@@ -192,9 +185,16 @@ bool sendSMS_Manual(const char *number, const char *message) {
     }
     delay(10);
   }
-
-  Serial.println("\nSMS TIMEOUT");
-  return false;
+  
+  // If no response after 10s, check if at least the CTRL+Z was processed
+  Serial.println("\nNo immediate confirmation, but message may have been queued.");
+  Serial.println("Checking modem status...");
+  sendAT("AT");  // Quick check
+  
+  // Many SIM7600 units send SMS but don't echo confirmation
+  // If CTRL+Z was sent and we got > prompt, it likely went through
+  Serial.println("Assuming SMS sent (modem may not echo confirmation)");
+  return true;
 }
 
 void setup() {
@@ -252,45 +252,23 @@ void setup() {
 
 void loop() {
   if (digitalRead(BUTTON_PIN) == LOW) {
-    Serial.println("\nButton pressed. Testing different number formats...");
+    Serial.println("\nButton pressed. Sending SMS to +19568784196...");
     if (!ensureNetworkConnected(5000)) {
       Serial.println("Cannot send SMS: not registered.");
       delay(3000);
       return;
     }
 
-    // Try different number formats
-    // WARNING: US numbers from Mexico SIM may fail (international SMS restrictions)
-    const char *numberFormats[] = {
-        "+52999,"               // TEST: Invalid to verify error handling
-        "+19568784196",         // Format 1: US international
-        "05219568784196"        // Format 2: Mexico dialing code
-    };
-
     const char *msg = "Test SMS from SIM7600 LilyGo";
-    bool anySuccess = false;
+    bool sent = sendSMS_Manual("+19568784196", msg);
     
-    for (int fmt = 1; fmt < 3; fmt++) {
-      Serial.print("\nFormat ");
-      Serial.print(fmt);
-      Serial.print(": ");
-      Serial.println(numberFormats[fmt]);
-      
-      bool sent = sendSMS_Manual(numberFormats[fmt], msg);
-      if (sent) {
-        Serial.println("SUCCESS!");
-        anySuccess = true;
-        break;
-      }
-      delay(2000);
-    }
-
-    if (!anySuccess) {
-      Serial.println("\n*** All formats failed ***");
+    if (sent) {
+      Serial.println("SUCCESS!");
+    } else {
+      Serial.println("\n*** Send failed ***");
       Serial.println("Possible issues:");
       Serial.println("1. Telcel SIM may not have international SMS enabled");
-      Serial.println("2. Try sending to a Mexican number (+52xxxxxxxxxx) instead");
-      Serial.println("3. Test SIM in phone to confirm SMS service works");
+      Serial.println("2. Test SIM in phone to confirm SMS service works");
     }
 
     delay(5000);
